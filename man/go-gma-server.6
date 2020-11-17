@@ -1,22 +1,22 @@
 '\" <<ital-is-var>>
 '\" <<bold-is-fixed>>
-.TH GO-GMA-SERVER 6 "GMA Toolkit 4.2.2" 12-Nov-2020 "Games" \" @@mp@@
+.TH GO-GMA-SERVER 6 "GMA Toolkit 4.2.2" 16-Nov-2020 "Games" \" @@mp@@
 .SH NAME
-go\-gma\-server \- GMA battle grid map server
+go-gma-server \- GMA battle grid map server
 .SH SYNOPSIS
 '\" <<usage>>
 .na
-.B go\-gma\-server
+.B go-gma-server
 .RB [ \-h ]
 .ad
 .LP
 .na
-.B go\-gma\-server
+.B go-gma-server
 .RB [ \-\-help ]
 .ad
 .LP
 .na
-.B go\-gma\-server
+.B go-gma-server
 .RB [ \-\-init\-file
 .IR path ]
 .RB [ \-\-log\--file
@@ -40,7 +40,7 @@ The individual
 clients used by players in a game may keep in contact with one another so that they all
 display the same contents. A change made on one client (moving a creature token or
 adding a room, say) appears on all the others. This is accomplished by starting a
-.B MapService
+.B go-gma-server
 process and having all of the 
 .B mapper 
 clients connect to it via their 
