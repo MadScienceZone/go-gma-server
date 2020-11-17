@@ -1,0 +1,175 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_PROGRAM_AUTHOR	Darren Hiebert	/dhiebert@users.sourceforge.net/
+!_TAG_PROGRAM_NAME	Exuberant Ctags	//
+!_TAG_PROGRAM_URL	http://ctags.sourceforge.net	/official site/
+!_TAG_PROGRAM_VERSION	5.9~svn20110310	//
+AddClient	mapservice/mapservice.go	/^func (ms *MapService) AddClient(newClient *MapClient) error {$/;"	f
+ApplyOp	mapservice/dice.go	/^func (d *DieConstant) ApplyOp(x, y int) (int, error) {$/;"	f
+ApplyOp	mapservice/dice.go	/^func (d *DieSpec) ApplyOp(x, y int) (int, error) {$/;"	f
+AssignMessageID	mapservice/mapevent.go	/^func (ev *MapEvent) AssignMessageID() {$/;"	f
+AuthenticateUser	mapservice/mapservice.go	/^func (c *MapClient) AuthenticateUser() error {$/;"	f
+Authenticator	mapservice/authenticator.go	/^type Authenticator struct {$/;"	t
+CanSendTo	mapservice/mapevent.go	/^func (ev *MapEvent) CanSendTo(recipient string) bool {$/;"	f
+ConnResponse	mapservice/mapservice.go	/^func (c *MapClient) ConnResponse() {$/;"	f
+CurrentChallenge	mapservice/authenticator.go	/^func (a *Authenticator) CurrentChallenge() (string) {$/;"	f
+DEBUGGING	mapservice/mapservice.go	/^const DEBUGGING = true$/;"	c
+Description	mapservice/dice.go	/^func (d *Dice) Description() (desc string) {$/;"	f
+Description	mapservice/dice.go	/^func (d *DieConstant) Description()	string {$/;"	f
+Description	mapservice/dice.go	/^func (d *DieSpec) Description() string {$/;"	f
+Dice	mapservice/dice.go	/^type Dice struct {$/;"	t
+DicePreset	mapservice/dicepresets.go	/^type DicePreset struct {$/;"	t
+DicePresetListToString	mapservice/dicepresets.go	/^func DicePresetListToString(presets []DicePreset) (string, error) {$/;"	f
+DicePresetToString	mapservice/dicepresets.go	/^func DicePresetToString(preset DicePreset) (string, error) {$/;"	f
+DieComponent	mapservice/dice.go	/^type DieComponent interface {$/;"	t
+DieConstant	mapservice/dice.go	/^type DieConstant struct {$/;"	t
+DieRoller	mapservice/dice.go	/^type DieRoller struct {$/;"	t
+DieSpec	mapservice/dice.go	/^type DieSpec struct {$/;"	t
+DoRoll	mapservice/dice.go	/^func (d *DieRoller) DoRoll(spec string) (string, []StructuredResult, error) {$/;"	f
+DumpState	mapservice/mapservice.go	/^func (ms *MapService) DumpState() {$/;"	f
+EmergencyStop	mapservice/mapservice.go	/^func (ms *MapService) EmergencyStop() {$/;"	f
+Evaluate	mapservice/dice.go	/^func (d *DieConstant) Evaluate(x int) (int, error) {$/;"	f
+Evaluate	mapservice/dice.go	/^func (d *DieSpec) Evaluate(x int) (int, error) {$/;"	f
+EventClass	mapservice/mapevent.go	/^func (ev *MapEvent) EventClass() string {$/;"	f
+EventKey	mapservice/mapevent.go	/^func (ev *MapEvent) EventKey() string {$/;"	f
+EventType	mapservice/mapevent.go	/^func (ev *MapEvent) EventType() string {$/;"	f
+ExecuteAction	mapservice/mapservice.go	/^func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {$/;"	f
+GenerateChallenge	mapservice/authenticator.go	/^func (a *Authenticator) GenerateChallenge() (string, error) {$/;"	f
+GetOperator	mapservice/dice.go	/^func (d *DieConstant) GetOperator() string { return d.Operator }$/;"	f
+GetOperator	mapservice/dice.go	/^func (d *DieSpec) GetOperator() string { return d.Operator }$/;"	f
+GuessObjectClass	mapservice/mapevent.go	/^func GuessObjectClass(attr_list []string) string {$/;"	f
+HandleClientConnection	mapservice/mapservice.go	/^func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {$/;"	f
+IsMaxRoll	mapservice/dice.go	/^func (d *DieSpec) IsMaxRoll() bool {$/;"	f
+IsMinRoll	mapservice/dice.go	/^func (d *DieSpec) IsMinRoll() bool {$/;"	f
+LastValue	mapservice/dice.go	/^func (d *DieConstant) LastValue() int {$/;"	f
+LastValue	mapservice/dice.go	/^func (d *DieSpec) LastValue() int {$/;"	f
+Len	mapservice/mapevent.go	/^func (e MapEventList) Len() int {$/;"	f
+Less	mapservice/mapevent.go	/^func (e MapEventList) Less(i, j int) bool {$/;"	f
+LoadDicePresets	mapservice/dicepresets.go	/^func LoadDicePresets(db *sql.DB) (map[string][]DicePreset, error) {$/;"	f
+LoadState	mapservice/mapservice.go	/^func (ms *MapService) LoadState() error {$/;"	f
+MESSAGE_ID_EPOCH	mapservice/mapevent.go	/^const MESSAGE_ID_EPOCH = 1593130546$/;"	c
+MapClient	mapservice/mapservice.go	/^type MapClient struct {$/;"	t
+MapEvent	mapservice/mapevent.go	/^type MapEvent struct {$/;"	t
+MapEventList	mapservice/mapevent.go	/^type MapEventList []*MapEvent$/;"	t
+MapService	mapservice/mapservice.go	/^type MapService struct {$/;"	t
+MaxRoll	mapservice/dice.go	/^func (d *Dice) MaxRoll() (int, error) {$/;"	f
+MaxRollToConfirm	mapservice/dice.go	/^func (d *Dice) MaxRollToConfirm(bonus int) (int, error) {$/;"	f
+MaxValue	mapservice/dice.go	/^func (d *DieConstant) MaxValue(x int) (int, error) {$/;"	f
+MaxValue	mapservice/dice.go	/^func (d *DieSpec) MaxValue(x int) (int, error) {$/;"	f
+MessageID	mapservice/mapevent.go	/^func (ev *MapEvent) MessageID() (int, error) {$/;"	f
+NaturalRoll	mapservice/dice.go	/^func (d *DieConstant) NaturalRoll() (int, int) {$/;"	f
+NaturalRoll	mapservice/dice.go	/^func (d *DieSpec) NaturalRoll() (int, int) {$/;"	f
+NewDice	mapservice/dice.go	/^func NewDice(description string) (*Dice, error) {$/;"	f
+NewDiceBasic	mapservice/dice.go	/^func NewDiceBasic(qty, sides, bonus int) (*Dice, error) {$/;"	f
+NewDiceByParameters	mapservice/dice.go	/^func NewDiceByParameters(qty, sides, bonus, diebonus, div, factor int) (*Dice, error) {$/;"	f
+NewDicePreset	mapservice/dicepresets.go	/^func NewDicePreset(name, desc, roll string) *DicePreset {$/;"	f
+NewDicePresetFromString	mapservice/dicepresets.go	/^func NewDicePresetFromString(srep string) (DicePreset, error) {$/;"	f
+NewDicePresetListFromString	mapservice/dicepresets.go	/^func NewDicePresetListFromString(srep string) ([]DicePreset, error) {$/;"	f
+NewDieRoller	mapservice/dice.go	/^func NewDieRoller() (*DieRoller, error) {$/;"	f
+NewMapEvent	mapservice/mapevent.go	/^func NewMapEvent(raw, obj_id string, obj_class string) (*MapEvent, error) {$/;"	f
+NewMapEventFromList	mapservice/mapevent.go	/^func NewMapEventFromList(raw string, fields []string, obj_id string, obj_class string) (*MapEvent, error) {$/;"	f
+NextEvent	mapservice/mapservice.go	/^func (c *MapClient) NextEvent() (*MapEvent, error) {$/;"	f
+NextMessageID	mapservice/mapevent.go	/^func NextMessageID() string {$/;"	f
+NotifyPeerChange	mapservice/mapservice.go	/^func (ms *MapService) NotifyPeerChange(username, action string) {$/;"	f
+PROTOCOL_VERSION	mapservice/mapservice.go	/^const PROTOCOL_VERSION = "332"$/;"	c
+PackageValues	mapservice/mapservice.go	/^func PackageValues(values ...string) (string, error) {$/;"	f
+ParseTclList	mapservice/tcllist.go	/^func ParseTclList(tcl_string string) ([]string, error) {$/;"	f
+PingAll	mapservice/mapservice.go	/^func (ms *MapService) PingAll() bool {$/;"	f
+RawEventText	mapservice/mapevent.go	/^func (ev *MapEvent) RawEventText() (string, error) {$/;"	f
+RemoveClient	mapservice/mapservice.go	/^func (ms *MapService) RemoveClient(oldClient string) {$/;"	f
+Reset	mapservice/authenticator.go	/^func (a *Authenticator) Reset() {$/;"	f
+Roll	mapservice/dice.go	/^func (d *Dice) Roll() (int, error) {$/;"	f
+RollToConfirm	mapservice/dice.go	/^func (d *Dice) RollToConfirm(confirm bool, threat int, bonus int) (int, error) {$/;"	f
+Run	mapservice/mapservice.go	/^func (ms *MapService) Run() {$/;"	f
+SaveDicePresets	mapservice/dicepresets.go	/^func SaveDicePresets(db *sql.DB, collection map[string][]DicePreset) error {$/;"	f
+SaveState	mapservice/mapservice.go	/^func (ms *MapService) SaveState() error {$/;"	f
+Send	mapservice/mapservice.go	/^func (c *MapClient) Send(values ...string) {$/;"	f
+Send	mapservice/mapservice.go	/^func (ms *MapService) Send(client net.Conn, values ...string) {$/;"	f
+SendDicePresetsToOtherClients	mapservice/mapservice.go	/^func (ms *MapService) SendDicePresetsToOtherClients(mainClient *MapClient, username string) {$/;"	f
+SendMyPresets	mapservice/mapservice.go	/^func (ms *MapService) SendMyPresets(thisClient *MapClient, username string) {$/;"	f
+SendRaw	mapservice/mapservice.go	/^func (ms *MapService) SendRaw(client net.Conn, message string) {$/;"	f
+SendRawToOthers	mapservice/mapservice.go	/^func (c *MapClient) SendRawToOthers(values string) {$/;"	f
+SendToOthers	mapservice/mapservice.go	/^func (c *MapClient) SendToOthers(values ...string) {$/;"	f
+SendWithExtraData	mapservice/mapservice.go	/^func (c *MapClient) SendWithExtraData(ev *MapEvent) {$/;"	f
+SetSecret	mapservice/authenticator.go	/^func (a *Authenticator) SetSecret(secret []byte) {$/;"	f
+Shutdown	mapservice/mapservice.go	/^func (ms *MapService) Shutdown() {$/;"	f
+StructuredDescribeRoll	mapservice/dice.go	/^func (d *Dice) StructuredDescribeRoll(sfOpt, successMessage, failureMessage string, rollBonus int) ([]StructuredDescription, error) {$/;"	f
+StructuredDescribeRoll	mapservice/dice.go	/^func (d *DieConstant) StructuredDescribeRoll() []StructuredDescription {$/;"	f
+StructuredDescribeRoll	mapservice/dice.go	/^func (d *DieSpec) StructuredDescribeRoll() []StructuredDescription {$/;"	f
+StructuredDescription	mapservice/dice.go	/^type StructuredDescription struct {$/;"	t
+StructuredResult	mapservice/dice.go	/^type StructuredResult struct {$/;"	t
+Swap	mapservice/mapevent.go	/^func (e MapEventList) Swap(i, j int) {$/;"	f
+Sync	mapservice/mapservice.go	/^func (ms *MapService) Sync(thisClient *MapClient) {$/;"	f
+TestAuthenticator	mapservice/authenticator_test.go	/^func TestAuthenticator(t *testing.T) {$/;"	f
+TestAuthenticatorRoundLimits	mapservice/authenticator_test.go	/^func TestAuthenticatorRoundLimits(t *testing.T) {$/;"	f
+TestDiceBellcurves	mapservice/dice_test.go	/^func TestDiceBellcurves(t *testing.T) {$/;"	f
+TestDiceCons	mapservice/dice_test.go	/^func TestDiceCons(t *testing.T) {$/;"	f
+TestDiceHistories	mapservice/dice_test.go	/^func TestDiceHistories(t *testing.T) {$/;"	f
+TestDicePercentile	mapservice/dice_test.go	/^func TestDicePercentile(t *testing.T) {$/;"	f
+TestDicePresetsNewListFromString	mapservice/dicepresets_test.go	/^func TestDicePresetsNewListFromString(t *testing.T) {$/;"	f
+TestDicePresetsToString	mapservice/dicepresets_test.go	/^func TestDicePresetsToString(t *testing.T) {$/;"	f
+TestDiceProbabilities	mapservice/dice_test.go	/^func TestDiceProbabilities(t *testing.T) {$/;"	f
+TestDiceStrProbabilities	mapservice/dice_test.go	/^func TestDiceStrProbabilities(t *testing.T) {$/;"	f
+TestDiceStructured	mapservice/dice_test.go	/^func TestDiceStructured(t *testing.T) {$/;"	f
+TestLoadDicePresets	mapservice/dicepresets_test.go	/^func TestLoadDicePresets(t *testing.T) {$/;"	f
+TestMapEvent	mapservice/mapevent_test.go	/^func TestMapEvent(t *testing.T) {$/;"	f
+TestMapService_CurrentProtocol	mapservice/mapservice_test.go	/^func TestMapService_CurrentProtocol(t *testing.T) {$/;"	f
+TestSaveDicePresets	mapservice/dicepresets_test.go	/^func TestSaveDicePresets(t *testing.T) {$/;"	f
+TestTclList_List2str	mapservice/tcllist_test.go	/^func TestTclList_List2str(t *testing.T) {$/;"	f
+TestTclList_Str2list	mapservice/tcllist_test.go	/^func TestTclList_Str2list(t *testing.T) {$/;"	f
+TestUpdateDicePresets	mapservice/dicepresets_test.go	/^func TestUpdateDicePresets(t *testing.T) {$/;"	f
+ToTclString	mapservice/tcllist.go	/^func ToTclString(listval []string) (string, error) {$/;"	f
+UpdateDicePresets	mapservice/dicepresets.go	/^func UpdateDicePresets(db *sql.DB, user string, presets []DicePreset) error {$/;"	f
+UpdateState	mapservice/mapservice.go	/^func (ms *MapService) UpdateState(event *MapEvent) {$/;"	f
+Username	mapservice/mapservice.go	/^func (c *MapClient) Username() string {$/;"	f
+ValidateMapEvent	mapservice/mapevent.go	/^func (ev *MapEvent) ValidateMapEvent() error {$/;"	f
+ValidateResponse	mapservice/authenticator.go	/^func (a *Authenticator) ValidateResponse(response string) (bool, error) {$/;"	f
+_apply_op	mapservice/dice.go	/^func _apply_op(operator string, x, y int) (int, error) {$/;"	f
+_probtester	mapservice/dice_test.go	/^func _probtester (t *testing.T, description string, f func()(int,error), minval, maxval int) {$/;"	f
+_send_event	mapservice/mapservice.go	/^func (c *MapClient) _send_event(extra_data []string, values ...string) {$/;"	f
+bytesEqual	mapservice/authenticator.go	/^func bytesEqual(a, b []byte) bool {$/;"	f
+calcResponse	mapservice/authenticator.go	/^func (a *Authenticator) calcResponse(secret []byte) ([]byte, error) {$/;"	f
+compareResults	mapservice/dice_test.go	/^func compareResults (a, b []StructuredResult) bool {$/;"	f
+even_elements	mapservice/mapevent.go	/^func even_elements(in []string) []string {$/;"	f
+eventMonitor	go-gma-server.go	/^func eventMonitor(sig_chan chan os.Signal, stop_chan chan int,$/;"	f
+init	mapservice/dice.go	/^func init() {$/;"	f
+init	mapservice/mapevent.go	/^func init() {$/;"	f
+intToStrings	mapservice/dice.go	/^func intToStrings(a []int) (as []string) {$/;"	f
+main	go-gma-server.go	/^func main() {$/;"	f
+main	go-gma-server.go	/^package main$/;"	p
+map_event_checklist	mapservice/mapevent.go	/^var map_event_checklist map[string]map_event_parameters$/;"	v
+map_event_parameters	mapservice/mapevent.go	/^type map_event_parameters struct {$/;"	t
+mapservice	mapservice/authenticator.go	/^package mapservice$/;"	p
+mapservice	mapservice/authenticator_test.go	/^package mapservice$/;"	p
+mapservice	mapservice/dice.go	/^package mapservice$/;"	p
+mapservice	mapservice/dice_test.go	/^package mapservice$/;"	p
+mapservice	mapservice/dicepresets.go	/^package mapservice$/;"	p
+mapservice	mapservice/dicepresets_test.go	/^package mapservice$/;"	p
+mapservice	mapservice/mapevent.go	/^package mapservice$/;"	p
+mapservice	mapservice/mapevent_test.go	/^package mapservice$/;"	p
+mapservice	mapservice/mapservice.go	/^package mapservice$/;"	p
+mapservice	mapservice/mapservice_test.go	/^package mapservice$/;"	p
+mapservice	mapservice/tcllist.go	/^package mapservice$/;"	p
+mapservice	mapservice/tcllist_test.go	/^package mapservice$/;"	p
+maxOf	mapservice/dice.go	/^func maxOf(a []int) (max int, pos int) {$/;"	f
+message_id_lock	mapservice/mapevent.go	/^var message_id_lock sync.Mutex$/;"	v
+minOf	mapservice/dice.go	/^func minOf(a []int) (min int, pos int) {$/;"	f
+nextEventSequence	mapservice/mapservice.go	/^var nextEventSequence int = 0$/;"	v
+next_message_id	mapservice/mapevent.go	/^var next_message_id int = 0$/;"	v
+plural	mapservice/mapservice.go	/^func plural(n int) string {$/;"	f
+reduceSums	mapservice/dice.go	/^func reduceSums (a [][]int) (sums []int) {$/;"	f
+rollDice	mapservice/dice.go	/^func (d *DieRoller) rollDice(repeat_iter, repeat_count int) (int, []StructuredResult, error) {$/;"	f
+setNewSpecification	mapservice/dice.go	/^func (d *DieRoller) setNewSpecification(spec string) error {$/;"	f
+strip_creature_base_name	mapservice/mapservice.go	/^func strip_creature_base_name(name string) string {$/;"	f
+substituteTemplateValues	mapservice/dice.go	/^func substituteTemplateValues(template string, values []interface{}) string {$/;"	f
+sumOf	mapservice/dice.go	/^func sumOf (a []int) (t int) {$/;"	f
+t_CONVERT_ANY	mapservice/tcllist.go	/^const t_CONVERT_ANY         = 16$/;"	c
+t_CONVERT_BRACE	mapservice/tcllist.go	/^const t_CONVERT_BRACE       = 2$/;"	c
+t_CONVERT_ESCAPE	mapservice/tcllist.go	/^const t_CONVERT_ESCAPE      = 4$/;"	c
+t_CONVERT_MASK	mapservice/tcllist.go	/^const t_CONVERT_MASK        = (t_CONVERT_BRACE | t_CONVERT_ESCAPE)$/;"	c
+t_CONVERT_NONE	mapservice/tcllist.go	/^const t_CONVERT_NONE        = 0$/;"	c
+t_TCL_DONT_QUOTE_HASH	mapservice/tcllist.go	/^const t_TCL_DONT_QUOTE_HASH = 8$/;"	c
+t_TCL_DONT_USE_BRACES	mapservice/tcllist.go	/^const t_TCL_DONT_USE_BRACES = 1$/;"	c
+tcl_convert_element	mapservice/tcllist.go	/^func tcl_convert_element(src string, flags int) string {$/;"	f
+tcl_scan_element	mapservice/tcllist.go	/^func tcl_scan_element(element string, flags int) (int, int, error) {$/;"	f
+verbose	mapservice/dice_test.go	/^const verbose = false	\/\/ set to true if you want debugging output$/;"	c

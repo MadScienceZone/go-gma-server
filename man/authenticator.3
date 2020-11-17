@@ -1,0 +1,279 @@
+.\" vim:set syntax=nroff:
+'\" <<bold-is-fixed>>
+'\" <<ital-is-var>>
+.TH AUTHENTICATOR 3 "GMA Toolkit 4.2.2" 13-Nov-2020 "API Functions" \" @@mp@@
+.SH NAME
+Authenticator \- GMA Mapper Service Authenticator
+.SH SYNOPSIS
+'\" <<usage>>
+.LP
+Python usage:
+.LP
+.na
+.B import 
+.B SoftwareAlchemy.GMA.Mapper.Authentication
+.LP
+.na
+.I auth
+.B =
+.BI Authenticator( secret =None,
+.IB client =None,
+.IB gm_secret =None,
+.IB username =None)
+.br
+.I challenge
+.B =
+.IB auth .generate_challenge()
+.br
+.IB auth .accept_challenge( challenge )
+.br
+.I response
+.B =
+.IB auth .generate_response()
+.br
+.IB auth .validate_response( response )
+.br
+.IB auth .reset()
+.br
+.IB username ,
+.I client 
+.B = 
+.IB auth .client_info()
+.ad
+.LP
+Go usage:
+.LP
+.na
+.B type
+.B Authenticator
+.B struct
+.B {
+.br
+.B "\ \ \ Secret"
+.B []byte
+.br
+.B "\ \ \ GmSecret"
+.B []byte
+.br
+.B "\ \ \ Challenge"
+.B []byte
+.br
+.B "\ \ \ Client"
+.B string
+.br
+.B "\ \ \ Username"
+.B string
+.br
+.B "\ \ \ GmMode"
+.B bool
+.br
+.B }
+.LP
+Type
+.B Authenticator
+.br
+.B "\ \ \ func"
+.BI ( a
+.B *Authenticator)
+.B CurrentChallenge()
+.B string
+.br
+.B "\ \ \ func"
+.BI ( a
+.B *Authenticator)
+.B GenerateChallenge()
+.B (string,
+.B error)
+.br
+.B "\ \ \ func"
+.BI ( a
+.B *Authenticator)
+.B Reset()
+.br
+.B "\ \ \ func"
+.BI ( a
+.B *Authenticator)
+.BI SetSecret( secret
+.B []byte)
+.B bool
+.br
+.B "\ \ \ func"
+.BI ( a
+.B *Authenticator)
+.BI ValidateResponse( response
+.B string)
+.B (bool,
+.B error)
+.ad
+'\" <</usage>>
+.SH DESCRIPTION
+.LP
+The challenge/response negotiation between the mapper server and clients is implemented
+in this object. A client wishing to authenticate should create an authenticator as
+'\" <<center>>
+.RS
+.I auth
+.B =
+.BI Authenticator( secret ,
+.IB client ,
+.BI username= username )
+.RE
+where
+.I secret
+is the shared secret (password) used by clients to authenticate to the server, and
+.I client
+is a string describing what sort of client this is. If the
+.I username
+parameter is passed, it will be sent to the server to identify the user (as shown in chat
+messages, etc.). Otherwise, the username will be taken from their local computing environment.
+.LP
+Servers should create their authenticator object as
+'\" <<center>>
+.RS
+.I s_auth
+.B =
+.BI Authenticator( secret ,
+.BI gm_secret= gm_secret )
+.RE
+where
+.I secret
+is as described above, and
+.I gm_secret
+is the password used exclusively by the GM.
+.LP
+The calculation method used for this authentication mechanism is documented in the
+protocol specification in 
+.BR mapper (6).
+.LP
+Note that the 
+.I secret
+and
+.I gm_secret
+parameters are
+.B bytes
+values. If you have a password as a regular string value, you'll need to
+convert it to 
+.B bytes
+(such as by calling its
+.B encode()
+method).
+.SS "Negotiation Process"
+.LP
+On the server side, an 
+.B Authenticator
+object 
+.I s_auth
+is constructed for each incoming connection. It issues a challenge unique to its session,
+and expects to see the corresponding response to that challenge, while other simultaneous
+incoming connections have their own
+.I s_auth
+objects negotiating with their incoming clients.
+.LP
+The server calls
+.IB s_auth .generate_challenge()
+to create a random challenge, which is sent to the client.
+.LP
+The client then calls
+.IB auth .accept_challenge()
+with the challenge it received from the server, and then calls
+.IB auth .generate_response()
+to calculate the expected response. This is sent to the server.
+.LP
+The server then calls
+.IB s_auth .validate_response()
+to determine if the response was valid.
+.SS "Methods"
+.LP
+The following methods are available for any
+.B Authenticator
+object:
+'\" <<list>>
+.TP
+.IB challenge = auth .generate_challenge()
+(server) Generate a random challenge for the client. This is stored internally for later validation.
+Returns a base-64 encoded representation of the challenge.
+.TP
+.IB auth .accept_challenge( challenge )
+(client) Accept a server's challenge as a base-64 string, storing it internally.
+.TP
+.IB response = auth .generate_response()
+(client) Generate a response to the previously-accepted challenge. This is returned as a base-64
+encoded string value.
+.TP
+.IB bool = auth .validate_response( response )
+(server) Returns
+.B True
+if the 
+.I response
+value matches the response expected for the challenge this object had previously generated.
+If the response was created using the GM's password, then the 
+.IB auth .gm_mode
+attribute is set to
+.BR True ,
+otherwise it will be
+.BR False .
+.TP
+.IB auth .reset()
+Resets the internal state of the 
+.I auth
+object, so it may be used to negotiate a new authentication.
+.TP
+.IB user , client = auth .client_info()
+Returns the username and client currently in use for this authenticator. Nothing in the negotiation
+provides these; they must have been given to the constructor (or, in the case of the username, determined
+by looking at the system environment).
+'\" <</>>
+.SS "Go API"
+.LP
+The Go API equivalents work similarly, except as noted below, assuming the variable
+.I auth
+is an
+.B Authenticator
+type value.
+'\" <<list>>
+.TP
+.IB challenge " = " auth .CurrentChallenge()
+Returns the base-64 encoded challenge value most recently generated via the
+.B GenerateChallenge()
+method. The 
+.IB auth .Challenge
+struct member holds a binary representation of the challenge, not the encoded string.
+.TP
+.IB auth .Reset()
+Works identically to the Python API.
+.TP
+.IB challenge ", " err " = " auth .GenerateChallenge()
+The 
+.I challenge
+value is only defined if
+.I err
+is 
+.BR nil ;
+otherwise an error occurred while trying to generate the challenge.
+.TP
+.IB valid ", " err " = " auth .ValidateResponse( response )
+If an error occurred,
+.I err
+will have a
+.RB non- nil
+value; otherwise
+.I valid
+indicates whether or not the authentication attempt succeeded. The
+.IB auth .GmMode
+struct member is also set to indicate the privilege level granted as a result.
+.LP
+At the time of the writing of this document, only the server-side part of the 
+authentication process is implemented in the Go version.
+'\" <</>>
+.SH "SEE ALSO"
+.BR socketinterface (3),
+.BR mapper (6).
+.SH AUTHOR
+.LP
+Steve Willoughby / steve@alchemy.com.
+.SH HISTORY
+.LP
+The Go port appeared in November, 2020, in GMA version 4.2.2.
+.SH BUGS
+.SH COPYRGHT
+Part of the GMA software suite, copyright \(co 1992\-2020 by Steven L. Willoughby (Software Alchemy), Aloha, Oregon, USA. All Rights Reserved. Distributed under BSD-3-Clause License. \"@m(c)@

@@ -1,0 +1,229 @@
+'\" <<ital-is-var>>
+'\" <<bold-is-fixed>>
+.TH GO-GMA-SERVER 6 "GMA Toolkit 4.2.2" 12-Nov-2020 "Games" \" @@mp@@
+.SH NAME
+go\-gma\-server \- GMA battle grid map server
+.SH SYNOPSIS
+'\" <<usage>>
+.na
+.B go\-gma\-server
+.RB [ \-h ]
+.ad
+.LP
+.na
+.B go\-gma\-server
+.RB [ \-\-help ]
+.ad
+.LP
+.na
+.B go\-gma\-server
+.RB [ \-\-init\-file
+.IR path ]
+.RB [ \-\-log\--file
+.IR path ]
+.RB [ \-\-mysql
+.IR database ]
+.RB [ \-\-password\-file
+.IR pass-file ]
+.RB [ \-\-port
+.IR port ]
+.RB [ \-\-save\-interval
+.IR mins ]
+.RB [ \-\-sqlite
+.IR path ]
+.ad
+'\" <</usage>>
+.SH DESCRIPTION
+.LP
+The individual
+.BR mapper (6)
+clients used by players in a game may keep in contact with one another so that they all
+display the same contents. A change made on one client (moving a creature token or
+adding a room, say) appears on all the others. This is accomplished by starting a
+.B MapService
+process and having all of the 
+.B mapper 
+clients connect to it via their 
+.B \-\-host
+and 
+.B \-\-port 
+options.
+.LP
+Once connected, the
+server
+will send an initial greeting that may define a list of player character tokens
+to appear on the 
+.B mapper
+context menus, or any other useful information the clients need to have
+at startup time. It may, at the GM's option, even initialize the client to
+show the full current game state.
+.LP
+From that point forward, the server
+is a simple echo relay between the clients, so they communicate with each
+other via the service. The server also tracks the commands it sees, so that it maintains
+a notion of the current state of the game. Clients may re-sync with the server in case
+they restart or otherwise miss any updates so they match the server's state.  The server
+may respond directly to some client queries
+(e.g., 
+.RB \*(lq AI? \*(rq)
+if it knows the answer rather than referring the query to the other clients.
+.LP
+To guard against nuisance or malicious port scans and other superfluous connections
+which don't proceed with the normal activity, the server will automatically drop
+any clients which don't authenticate within a few poll intervals. (In actual production
+use, we have observed some automated agents which connected and then sat idle for hours,
+consuming server resources.)
+.LP
+This is a re-implementation from scratch of the GMA server in the Go programming language.
+The original Python implementation is documented in
+.BR mapservice (6).
+.SH OPTIONS
+.LP
+The following options control the behavior of
+.BR go\-gma\-server .
+'\" <<list>>
+.TP
+.BR \-h , \-\-help
+Print a usage summary and exit.
+.TP
+.BI "\-\-init\-file " init-file
+Each line in
+.I init-file
+will be sent verbatim to each client upon connection to the server.
+The lines of this file must therefore be valid mapper protocol commands as documented in
+.BR mapper (6).
+The original version of the server only read this file at start-up, repeating its
+contents from memory to all clients; this version reads the file every time a client
+connects, allowing changes to be made to the initialization file which take effect
+immediately.
+The following special commands may appear in this file. These are not sent to
+the clients directly, but trigger other setup events in the server itself:
+.RS
+'\" <<desc>>
+.TP 15
+.B SYNC
+Enables sync-on-connect mode. With this set, the server will automatically perform the
+effects of a 
+.B SYNC
+command for each client as it connects (after authentication if that is required).
+.TP
+.BI "LOAD " filename
+This directive is deprecated. It is not supported by the Go version of the server.
+.RE
+'\" <</>>
+.TP
+.BI "\-\-log\-file " log-file
+Append a record of server actions and diagnostic messages to the specified file.
+By default, this log is sent to the standard output.
+.TP
+.BI "\-\-password\-file " pass-file
+If this option is given, the server will require clients to authenticate with a
+valid password. The first line of
+.I pass-file
+is the shared password expected to be used by all players. If a second line
+is present, it provides a GM password which will grant GM privileges to a user
+authenticating using it.
+.RS
+.LP
+Subsequent lines, if any, give specific passwords for individual users. These have the
+form
+.RS
+.IB username : password
+.RE
+Any login for the given 
+.I username
+must use the individual password for that user to successfully authenticate to the server.
+Any
+.I username
+not listed in the password file (other than
+.RB \*(lq gm \*(rq)
+will successfully authenticate if the general-use shared password (the first line of
+the password file) is given.
+.RE
+.TP
+.BI "\-\-port " port
+The service will accept incoming connections on the specified TCP port. The default is 2323.
+.TP
+.BI "\-\-save\-interval " mins
+If the
+.B \-\-mysql
+or
+.B \-\-sqlite
+option is given, this sets the frequency (in minutes) at which the game state is saved
+to the database.
+The default is every 10 minutes. 
+.TP
+.BI "\-\-sqlite " path
+Open the sqlite3 database 
+.I path
+as the persistent record of game state and history. Any saved game state is read in from
+this database when the service starts, allowing the game to continue from where it was
+when the server was stopped. The service will periodically save its current state to this
+database.
+.TP
+.BI "\-\-mysql " database
+Analogous to the
+.B \-\-sqlite
+option, this uses a MySQL database for persistent storage. 
+'\" <</ital-is-var>>
+.I "This is not currently implemented."
+'\" <<ital-is-var>>
+'\" <</>>
+.SH SECURITY
+.LP
+'\" <</bold-is-fixed>>
+.B "The authentication system employed here is simplisitic and not sufficient for general application security,"
+but for the sake of inconveniencing cheating at our little game
+amongst friends, it will suffice for our narrowly-defined purposes where the stakes
+are negligibly low.
+'\" <<bold-is-fixed>>
+.LP
+It is intended just to discourage cheating at the game by looking
+at spoilers or direct messages intended for other users, not for any more rigorous
+protection.
+.LP
+The main weakness of the system is that passwords are stored in plaintext on the
+server, which means it is critical to secure the password file and the system itself.
+Caution your players to use a password for the mapper that is different from any other
+passwords they use (which should be the password practice people observe anyway). A
+breach that reveals passwords from the server's file would then only allow an imposter
+to log in to your map service, which admittedly is more of an inconvenience than a serious security issue, assuming you use your map server just for playing a game and not for
+the communication of any sensitive information. 
+.LP
+Don't use the GMA mapper server for the communication of sensitive information. It's
+part of a game. Just play a game with it.
+.SH "SIGNALS"
+.LP
+The map service responds to the following signals while running.
+Note that this is different from the behavior of the original
+server.
+'\" <<desc>>
+.TP 8
+.B HUP
+This signal causes the server to save state if needed and shut down gracefully.
+No new connections will be accepted, but the server will wait for existing ones
+to terminate before shutting down.
+.TP
+.B INT
+Emergency shutdown. Just like the graceful shutdown caused by a HUP signal,
+but forces all existing connections to immediately terminate.
+.TP
+.B USR1
+This signal causes the server to dump a human-readable description of the current game state
+on its standard output.
+.TP
+.B USR2
+This signal causes the server to save its current state if needed.
+'\" <</>>
+.SH "SEE ALSO"
+.LP
+.BR gma (6),
+.BR mapper (5),
+.BR mapper (6),
+.BR mapservice (6).
+.SH AUTHOR
+.LP
+Steve Willoughby / steve@alchemy.com.
+.SH BUGS
+.SH COPYRGHT
+Part of the GMA software suite, copyright \(co 1992\-2020 by Steven L. Willoughby (Software Alchemy), Aloha, Oregon, USA. All Rights Reserved. Distributed under BSD-3-Clause License. \"@m(c)@
