@@ -323,7 +323,7 @@ func (c *MapClient) ConnResponse() {
 		client := "unknown"
 		auth := "0"
 		wo := "0"
-		if peer.Authenticated {
+		if peer.Authenticated && peer.Auth != nil {
 			client = peer.Auth.Client
 			auth = "1"
 		}
@@ -392,17 +392,19 @@ func (ms *MapService) Run() {
 	//
 	// load all user presets into memory for quick recall later
 	//
-	ms.PlayerDicePresets, err = LoadDicePresets(ms.Database)
-	if err != nil {
-		log.Printf("Unable to preload dice presets! (%v)", err)
-		ms.EmergencyStop()
-		return
-	}
-	err = ms.LoadState()
-	if err != nil {
-		log.Printf("Unable to preload game state! (%v)", err)
-		ms.EmergencyStop()
-		return
+	if ms.Database != nil {
+		ms.PlayerDicePresets, err = LoadDicePresets(ms.Database)
+		if err != nil {
+			log.Printf("Unable to preload dice presets! (%v)", err)
+			ms.EmergencyStop()
+			return
+		}
+		err = ms.LoadState()
+		if err != nil {
+			log.Printf("Unable to preload game state! (%v)", err)
+			ms.EmergencyStop()
+			return
+		}
 	}
 	//
 	// Initialize
@@ -1062,6 +1064,14 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 					NextMessageID())
 				return
 			}
+			if ms.Database == nil {
+				log.Printf("[client %s] DD command failed (no open database)", thisClient.ClientAddr)
+				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+					NextMessageID())
+				return
+			}
+
 			err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
 			if err != nil {
 				log.Printf("[client %s] DD command failed to store: %v", thisClient.ClientAddr, err)
@@ -1083,6 +1093,13 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 		case "DD+":
 			if !thisClient.Authenticated || thisClient.Auth == nil {
 				log.Printf("[client %s] DD+ command failed: no username authenticated for user", thisClient.ClientAddr)
+				return
+			}
+			if ms.Database == nil {
+				log.Printf("[client %s] DD+ command failed (no open database)", thisClient.ClientAddr)
+				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+					NextMessageID())
 				return
 			}
 			new_set, err := NewDicePresetListFromString(event.Fields[1])
@@ -1118,6 +1135,13 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 		case "DD/":
 			if !thisClient.Authenticated || thisClient.Auth == nil {
 				log.Printf("[client %s] DD/ command failed: no username authenticated for user", thisClient.ClientAddr)
+				return
+			}
+			if ms.Database == nil {
+				log.Printf("[client %s] DD/ command failed (no open database)", thisClient.ClientAddr)
+				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+					NextMessageID())
 				return
 			}
 			old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
@@ -1192,6 +1216,7 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 				thisClient.IncomingData = nil
 			}
 			thisClient.IncomingDataType = "LS"
+			return // don't save this (incomplete) operation in the state history
 
 		case "LS:":
 			if thisClient.IncomingDataType == "" {
@@ -1204,6 +1229,7 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 			}
 			saved_data := event.Fields[1]
 			thisClient.IncomingData = append(thisClient.IncomingData, saved_data)
+			return // don't save this (incomplete) operation in the state history
 
 		case "LS.":
 			if thisClient.IncomingDataType == "" {
