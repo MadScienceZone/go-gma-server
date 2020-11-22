@@ -638,36 +638,6 @@ func PackageValues(values ...string) (string, error) {
 }
 
 //
-// Send transmits a string (plus newline) to the specified client.
-// This is formed from the list of data values passed in, which is
-// formatted as a TCL list (per server protocol specification) with
-// a trailing newline.
-// 
-//
-//func (ms *MapService) Send(client net.Conn, values ...string) {
-//	message, err := PackageValues(values...)
-//	if err != nil {
-//		log.Printf("[client %s] ERROR packaging data to be transmitted: %v (%v)", client.RemoteAddr().String(), err, values)
-//	} else {
-//		if strings.ContainsAny(message, "\n\r") {
-//			log.Printf("[client %s] ERROR packaging data to be transmitted: message would contain newlines (%v)", client.RemoteAddr().String(), values)
-//		} else {
-//			if DEBUGGING {
-//				log.Printf("[client %s] -> %v", client.RemoteAddr().String(), message)
-//			}
-//			client.Write([]byte(message + "\n"))
-//		}
-//	}
-//}
-
-//func (ms *MapService) SendRaw(client net.Conn, message string) {
-//	if DEBUGGING {
-//		log.Printf("... %s", message)
-//	}
-//	client.Write([]byte(message + "\n"))
-//}
-
-//
 // Maintain the list of our client connections, for operations where we
 // need to send messages to some or all of them.
 //
