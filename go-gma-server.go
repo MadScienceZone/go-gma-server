@@ -132,7 +132,7 @@ func eventMonitor(sig_chan chan os.Signal, stop_chan chan int,
 						log.Printf("EMERGENCY SHUTDOWN INITIATED")
 						ms.AcceptIncoming = false
 						for i, client := range ms.Clients {
-							log.Printf("Terminating client %d from %s", i, client.ClientAddr)
+							log.Printf("Terminating client %v from %s", i, client.ClientAddr)
 							client.Connection.Close()
 						}
 						stop_chan <- 1

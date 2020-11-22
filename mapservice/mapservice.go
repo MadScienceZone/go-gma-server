@@ -126,6 +126,8 @@ type MapClient struct {
     IncomingData        []string        // holding buffer for multi-command sequence of events
     LastPolo            int64           // last time we heard a POLO response
     UnauthenticatedPings int            // number of times we pinged this client withouth authentication
+	CommChannel			chan string		// buffered channel for data to be sent to the client
+	ReadyToClose        bool			// true if we're really finished with this connection now
 }
 
 func (c *MapClient) Username() string {
@@ -216,6 +218,28 @@ func (c *MapClient) AuthenticateUser() error {
 }
 
 //
+// Client communications are arranged to minimize critical paths
+// around access to shared data and to avoid service to the other
+// clients to lock up if one client stops accepting input. To
+// implement this, we have a buffered channel for each client. Our
+// service code writes to that channel (abandoning clients which
+// aren't responsive enough to avoid the channel filling up. In
+// our overall architecture, clients shouldn't be in that position
+// short of a serious problem, and it's better for a client to 
+// reconnect when it can than to drop messages or back up a big
+// backlog of messages here or (worse) block waiting for the 
+// channel or socket to have available space to write into.
+//
+// A dedicated goroutine is started for each client which feeds
+// all messages sent on the client's channel out to the network
+// socket connected to the client app. When the server is done
+// talking to a client, we don't shut down the socket right away,
+// but rather send a stop signal of "■■■" on the channel. When the
+// background feeder goroutine gets that signal, it closes the socket
+// and terminates its own operation.
+//
+
+//
 // Local client interface to the service Send method.
 // If the client requested a restricted set of messages,
 // we will filter those here.
@@ -227,6 +251,25 @@ func (c *MapClient) Send(values ...string) {
 	c._send_event(nil, values...)
 }
 
+func (c *MapClient) SendRaw(data string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[client %s] caught attempt to write too late to client: %v", c.ClientAddr, r)
+		}
+	}()
+
+	select {
+		case c.CommChannel <- data:
+			if DEBUGGING {
+				log.Printf("[client %s] ... %s", c.ClientAddr, data)
+			}
+		default:
+			log.Printf("[client %s] UNABLE TO SEND \"%s\" (channel is full)", c.ClientAddr, data)
+			log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
+			c.Close()
+	}
+}
+
 //
 // Same but with extra data lines needed for some
 // block-data events (e.g., LS)
@@ -236,6 +279,12 @@ func (c *MapClient) SendWithExtraData(ev *MapEvent) {
 }
 
 func (c *MapClient) _send_event(extra_data []string, values ...string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[client %s] caught attempt to write too late to client: %v", c.ClientAddr, r)
+		}
+	}()
+
 	if c.AcceptedList != nil {
 		ok_to_send := false
 		for _, allowed_type := range c.AcceptedList {
@@ -245,28 +294,52 @@ func (c *MapClient) _send_event(extra_data []string, values ...string) {
 			}
 		}
 		if !ok_to_send {
+			if DEBUGGING {
+				log.Printf("[client %s] blocked sending %v", c.ClientAddr, values)
+			}
 			return
 		}
 	}
-	c.Service.Send(c.Connection, values...)
+	message, err := PackageValues(values...)
+	if err != nil {
+		log.Printf("[client %s] ERROR packaging data to be transmitted: %v (%v)", c.ClientAddr, err, values)
+	} else {
+		if strings.ContainsAny(message, "\n\r") {
+			log.Printf("[client %s] ERROR packaging data to be transmitted: message would contain newlines (%v)", c.ClientAddr, values)
+		} else {
+			if DEBUGGING {
+				log.Printf("[client %s] -> %v", c.ClientAddr, message)
+			}
+			select {
+				case c.CommChannel <- message:
+					if DEBUGGING {
+						log.Printf("[client %s] ... %s", c.ClientAddr, message)
+					}
+				default:
+					log.Printf("[client %s] UNABLE TO SEND \"%s\" (channel is full)", c.ClientAddr, message)
+					log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
+					c.Close()
+			}
+		}
+	}
+
 	if extra_data != nil {
 		for _, data := range extra_data {
-			c.Service.SendRaw(c.Connection, data)
+			c.SendRaw(data)
 		}
 	}
 }
+
 
 //
 // Send to all other clients (other than myself)
 //
 func (c *MapClient) SendToOthers(values ...string) {
-	c.Service.lock.RLock()
-	for aClientAddr, aClient := range c.Service.Clients {
-		if aClientAddr != c.ClientAddr {
+	for _, aClient := range c.Service.AllClients() {
+		if aClient.ClientAddr != c.ClientAddr {
 			aClient.Send(values...)
 		}
 	}
-	c.Service.lock.RUnlock()
 }
 
 //
@@ -275,13 +348,38 @@ func (c *MapClient) SendToOthers(values ...string) {
 // clients.
 //
 func (c *MapClient) SendRawToOthers(values string) {
-	c.Service.lock.RLock()
-	for aClientAddr, aClient := range c.Service.Clients {
-		if aClientAddr != c.ClientAddr {
-			c.Service.SendRaw(aClient.Connection, values)
+	for _, aClient := range c.Service.AllClients() {
+		if aClient.ClientAddr != c.ClientAddr {
+			aClient.SendRaw(values)
 		}
 	}
-	c.Service.lock.RUnlock()
+}
+
+//
+// Signal that we're done with the client.
+// we'll keep the channel and socket open until we know
+// we have sent the remaining messages out to the client
+// (including, presumably, the relevant message to the client
+// about why we're terminating them)
+//
+func (c *MapClient) Close() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[client %s] recovered from MapClient Close error: %v", c.ClientAddr, r)
+		}
+	}()
+	c.ReachedEOF = true
+	// try to signal the background feeder that we're finished and it's
+	// safe to shut down the socket, if possible
+	select {
+		case c.CommChannel <- "■■■":
+			if DEBUGGING {
+				log.Printf("[client %s] Signaling client to stop", c.ClientAddr)
+			}
+		default:
+			log.Printf("[client %s] Unable to send stop signal to client channel; shutting down socket as last resort.", c.ClientAddr)
+			c.Connection.Close()
+	}
 }
 
 //
@@ -313,7 +411,7 @@ func (c *MapClient) ConnResponse() {
 	time_now := time.Now().Unix()
 	count := 0
 
-	for _, peer := range c.Service.Clients {
+	for _, peer := range c.Service.AllClients() {
 		is := strconv.Itoa(count)
 		who := "peer"
 		if c.ClientAddr == peer.ClientAddr {
@@ -342,6 +440,38 @@ func (c *MapClient) ConnResponse() {
 		count++
 	}
 	c.Send("CONN.", strconv.Itoa(count), base64.StdEncoding.EncodeToString(cksum.Sum(nil)))
+}
+
+//
+// Send messages to the client socket as they arrive
+// from our channel.
+//
+func (c *MapClient) backgroundSender() {
+	if DEBUGGING {
+		log.Printf("[client %s] launched backgroundSender", c.ClientAddr)
+	}
+
+FeedClient:
+	for {
+		select {
+			case message, more := <-c.CommChannel:
+				if !more || message == "■■■" {
+					log.Printf("[client %s] Disconnecting", c.ClientAddr)
+					c.Connection.Close()
+					c.ReachedEOF = true
+					break FeedClient
+				} else {
+					if DEBUGGING {
+						log.Printf("[client %s] tx: %s", c.ClientAddr, message)
+					}
+					c.Connection.Write([]byte(message + "\n"))
+				}
+		}
+	}
+	if DEBUGGING {
+		log.Printf("[client %s] stopped backgroundSender", c.ClientAddr)
+	}
+	c.ReadyToClose = true
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -375,6 +505,24 @@ type MapService struct {
     PlayerDicePresets   map[string][]DicePreset // dictionary mapping username to personal die roll presets
     SaveNeeded          bool                    // have we made changes to the game state since the last save?
     StopChannel         chan int                // channel used to signal time for server to stop
+}
+
+//
+// Get a list of clients the server is tracking
+//
+func (ms *MapService) AllClients() []*MapClient {
+	// This allows us to lock the global client list for as
+	// little time as possible, so a routine can then go off
+	// and use the list independently. 
+	ms.lock.RLock()
+	clients := make([]*MapClient, len(ms.Clients))
+	i := 0
+	for _, aClient := range ms.Clients {
+		clients[i] = aClient
+		i++
+	}
+	ms.lock.RUnlock()
+	return clients
 }
 
 //
@@ -439,34 +587,29 @@ func (ms *MapService) Run() {
 // returns true if there were any connected clients to send to.
 //
 func (ms *MapService) PingAll() bool {
-	ms.lock.RLock()
-	num_clients := len(ms.Clients)
-	ms.lock.RUnlock()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("caught attempt to ping too late to client: %v", r)
+		}
+	}()
 
-	if num_clients == 0 {
-		return false
-	}
-
-	ms.lock.RLock()
 	i := 0
-	for _, client := range ms.Clients {
-		// check for an unauthenticated client hanging around too long
+	for _, client := range ms.AllClients() {
 		if !client.Authenticated {
 			client.UnauthenticatedPings++
 			if client.UnauthenticatedPings > 2 {
 				log.Printf("[client %s] timeout waiting for successful authentication", client.ClientAddr)
-				client.Send("DENIED", "No successful login made.")
-				client.Connection.Close()
+				client.Send("DENIED", "No successful login made in time.")
+				client.Close()
 			}
 		}
 		client.Send("MARCO")
 		i++
 	}
-	ms.lock.RUnlock()
 	log.Printf("Pinged %d client%s", i, plural(i))
-
 	return i > 0
 }
+
 //
 // Initiate a shutdown. This will terminate the incoming connection loop
 // and wait for any existing connections to finish what they were doing.
@@ -501,28 +644,28 @@ func PackageValues(values ...string) (string, error) {
 // a trailing newline.
 // 
 //
-func (ms *MapService) Send(client net.Conn, values ...string) {
-	message, err := PackageValues(values...)
-	if err != nil {
-		log.Printf("[client %s] ERROR packaging data to be transmitted: %v (%v)", client.RemoteAddr().String(), err, values)
-	} else {
-		if strings.ContainsAny(message, "\n\r") {
-			log.Printf("[client %s] ERROR packaging data to be transmitted: message would contain newlines (%v)", client.RemoteAddr().String(), values)
-		} else {
-			if DEBUGGING {
-				log.Printf("[client %s] -> %v", client.RemoteAddr().String(), message)
-			}
-			client.Write([]byte(message + "\n"))
-		}
-	}
-}
+//func (ms *MapService) Send(client net.Conn, values ...string) {
+//	message, err := PackageValues(values...)
+//	if err != nil {
+//		log.Printf("[client %s] ERROR packaging data to be transmitted: %v (%v)", client.RemoteAddr().String(), err, values)
+//	} else {
+//		if strings.ContainsAny(message, "\n\r") {
+//			log.Printf("[client %s] ERROR packaging data to be transmitted: message would contain newlines (%v)", client.RemoteAddr().String(), values)
+//		} else {
+//			if DEBUGGING {
+//				log.Printf("[client %s] -> %v", client.RemoteAddr().String(), message)
+//			}
+//			client.Write([]byte(message + "\n"))
+//		}
+//	}
+//}
 
-func (ms *MapService) SendRaw(client net.Conn, message string) {
-	if DEBUGGING {
-		log.Printf("... %s", message)
-	}
-	client.Write([]byte(message + "\n"))
-}
+//func (ms *MapService) SendRaw(client net.Conn, message string) {
+//	if DEBUGGING {
+//		log.Printf("... %s", message)
+//	}
+//	client.Write([]byte(message + "\n"))
+//}
 
 //
 // Maintain the list of our client connections, for operations where we
@@ -551,30 +694,41 @@ func (ms *MapService) AddClient(newClient *MapClient) error {
 	return nil
 }
 
+// Wait for pending output to drain on the network socket before
+// fully closing it.
+
+func (ms *MapService) WaitAndRemoveClient(oldClient *MapClient) {
+	log.Printf("[client %s] Waiting to close socket", (*oldClient).ClientAddr)
+	for !(*oldClient).ReadyToClose {
+		time.Sleep(10 * time.Millisecond)
+	}
+	(*oldClient).Connection.Close()
+	log.Printf("[client %s] Closed socket", (*oldClient).ClientAddr)
+}
+
 func (ms *MapService) RemoveClient(oldClient string) {
-	ms.lock.Lock()
+	ms.lock.RLock()
 	oldClientObj, ok := ms.Clients[oldClient]
+	ms.lock.RUnlock()
 	if ok {
+		go ms.WaitAndRemoveClient(oldClientObj)
+		ms.lock.Lock()
 		delete(ms.Clients, oldClient)
+		ms.lock.Unlock()
 		log.Printf("Now %d connected client%s", len(ms.Clients), plural(len(ms.Clients)))
 	}
-	ms.lock.Unlock()
-
 	// notify everyone of the change
 	ms.NotifyPeerChange(oldClientObj.Username(), "left")
 }
 
 func (ms *MapService) NotifyPeerChange(username, action string) {
-	ms.lock.RLock()
-	for _, peer := range ms.Clients {
+	for _, peer := range ms.AllClients() {
 		if peer.Authenticated {
 			peer.Send("//", username, action)
 			peer.ConnResponse()
 		}
 	}
-	ms.lock.RUnlock()
 }
-
 
 //
 // HandleClientConnection is invoked as a coroutine for each incoming client
@@ -598,10 +752,12 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 		Authenticated: false,
 		dice:          dieRoller,
 		LastPolo:	   time.Now().Unix(),
+		CommChannel:   make(chan string, 256),
 	}
 	log.Printf("Incoming connection from %s", thisClient.ClientAddr)
-	defer clientConnection.Close()
-
+	defer ms.WaitAndRemoveClient(&thisClient)
+	go thisClient.backgroundSender()
+	sync_client := false
 
 	//
 	// Start by sending our greeting to the client
@@ -609,20 +765,19 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 	if !ms.AcceptIncoming {
 		log.Printf("[client %s] DENIED access (server not accepting new connections at this time).", thisClient.ClientAddr)
 		thisClient.Send("DENIED", "Server is not ready to accept connections. Try again later.")
-		return
+		goto end_connection
 	}
 
 	err = ms.AddClient(&thisClient)
 	if err != nil {
 		thisClient.Send("DENIED", "Internal error setting up connection.")
 		log.Printf("[client %s] ERROR adding client to list: %v", thisClient.ClientAddr, err)
-		return
+		goto end_connection
 	}
 
 	//
 	// Initial server greeting from InitFile
 	//
-	sync_client := false
 	if ms.InitFile != "" {
 		fp, err := os.Open(ms.InitFile)
 		if err != nil {
@@ -636,7 +791,7 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 				} else if len(init_text) >= 4 && init_text[0:4] == "LOAD" {
 					log.Printf("Ignoring deprecated init-file directive: %s", init_text)
 				} else {
-					ms.SendRaw(clientConnection, scanner.Text())
+					thisClient.SendRaw(scanner.Text())
 				}
 			}
 			fp.Close()
@@ -673,7 +828,7 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 	//
 	// Read input events from the client and act upon them
 	//
-	for {
+	for !thisClient.ReachedEOF {
 		event, err := thisClient.NextEvent()
 		if thisClient.ReachedEOF {
 			break
@@ -695,11 +850,13 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 
 end_connection:
 	ms.RemoveClient(thisClient.ClientAddr)
+	thisClient.Close()
 	if commError := thisClient.Scanner.Err(); commError != nil {
 		log.Printf("[client %s] I/O Error on connection: %v", thisClient.ClientAddr, commError)
 	}
-
-	log.Printf("[client %s] Closing connection", thisClient.ClientAddr)
+	if DEBUGGING {
+		log.Printf("[client %s] Exiting client handler", thisClient.ClientAddr)
+	}
 }
 
 //
@@ -1710,7 +1867,7 @@ func (ms *MapService) Sync(thisClient *MapClient) {
 // with the current set of presets.
 //
 func (ms *MapService) SendDicePresetsToOtherClients(mainClient *MapClient, username string) {
-	for _, peer := range ms.Clients {
+	for _, peer := range ms.AllClients() {
 		if peer.ClientAddr != mainClient.ClientAddr && peer.Username() == username {
 			ms.SendMyPresets(peer, username)
 		}
