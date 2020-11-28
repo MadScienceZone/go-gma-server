@@ -99,7 +99,7 @@ const PROTOCOL_VERSION = "332"
 //
 // Turn on DEBUGGING to get extra information logged during transactions with clients
 //
-const DEBUGGING = true
+const DEBUGGING = false
 //
 // We will terminate clients if they've been idle this many seconds and we have a full
 // channel of messages trying to send to them
