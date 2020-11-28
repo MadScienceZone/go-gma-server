@@ -355,6 +355,7 @@ func (c *MapClient) sendToClientChannel(data string) {
 	if queueing {
 		// If we're already queueing messages, just add to the backlog
 		c.queueMessage(data)
+		return
 	}
 
 	select {
@@ -517,6 +518,9 @@ drainBacklog:
 					for {
 						select {
 							case c.CommChannel <- c.messageBacklogQueue[0]:
+								if DEBUGGING {
+									log.Printf("[client %s] unqueue %s", c.ClientAddr, c.messageBacklogQueue[0])
+								}
 								if len(c.messageBacklogQueue) > 1 {
 									c.messageBacklogQueue = c.messageBacklogQueue[1:]
 								} else {
@@ -874,7 +878,7 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 		}
 		if err != nil {
 			log.Printf("[client %s] error reading input: %v", thisClient.ClientAddr, err)
-			thisClient.Send("//", fmt.Sprintf("Command not accepted: %v", err))
+			goto end_connection
 		} else {
 			// interpret the event
 			log.Printf("[client %s] event %v; key %v", thisClient.ClientAddr, event.Fields, event.Key)
