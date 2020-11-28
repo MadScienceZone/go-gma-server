@@ -1787,11 +1787,11 @@ reject_LS:
 								start = 0
 							}
 						} else {
-							// send everything from message #target to the end
+							// send everything from message #target+1 to the end
 							start = sort.Search(len(ms.ChatHistory), func (i int) bool {
 								numeric_id, err := ms.ChatHistory[i].MessageID()
 								if err != nil { return false }
-								return numeric_id >= target
+								return numeric_id > target
 							})
 						}
 					}
