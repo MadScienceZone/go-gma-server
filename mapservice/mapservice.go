@@ -105,6 +105,11 @@ const DEBUGGING = true
 // channel of messages trying to send to them
 //
 const ClientIdleTimeout = 180
+//
+// Number of messages which can be buffered in a client channel before we resort to
+// more expensive queuing
+//
+const CommChannelBufferSize = 256
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //  __  __              ____ _ _            _   
@@ -795,7 +800,7 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 		Authenticated: false,
 		dice:          dieRoller,
 		LastPolo:	   time.Now().Unix(),
-		CommChannel:   make(chan string, 256),
+		CommChannel:   make(chan string, CommChannelBufferSize),
 	}
 	log.Printf("Incoming connection from %s", thisClient.ClientAddr)
 	defer ms.WaitAndRemoveClient(&thisClient)
@@ -944,7 +949,7 @@ func (ms *MapService) UpdateState(event *MapEvent) {
 func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 	switch event.EventType() {
 		// Effectively a no-op. Ignore completely.
-		case "//", "MARCO":
+		case "MARCO":
 			return
 
 		// Also a no-op, but we're interested in how long it's been since
@@ -959,7 +964,7 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 			thisClient.Send("//", "Clients not allowed to send this command", event.EventType())
 
 		// Events simply relayed to all other clients
-		case "AI", "AI:", "AI.", "AV", "CLR@", "L", "M", "M?", "M@", "MARK":
+		case "//", "AI", "AI:", "AI.", "AV", "CLR@", "L", "M", "M?", "M@", "MARK":
 			thisClient.SendToOthers(event.Fields...)
 
 		// Events simply relayed, but restricted to GM only

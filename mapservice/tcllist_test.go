@@ -140,6 +140,7 @@ func TestTclList_Str2list(t *testing.T) {
 		{tcl: "a b {this {is a} string}",list: []string{"a", "b", "this {is a} string"},is_error: false},
 		{tcl: "a b {this \\{ too}",   list: []string{"a", "b", "this { too"},    is_error: false},
 		{tcl: "a b this\\ \\{\\ too", list: []string{"a", "b", "this { too"},    is_error: false},
+		{tcl: "^\\$\\[.*\\]",         list: []string{"^\\$\\[.*\\]"},            is_error: false},
 	}
 
 	for _, test := range tests {

@@ -458,6 +458,9 @@ func ParseTclList(tcl_string string) ([]string, error) {
 		// We check for this specific set of whitespace characters
 		// instead of unicode.IsSpace because the Tcl spec says so.
 		if literal_next {
+			if r != '{' && r != '}' && r != '\\' && r != '"' && r != ' ' && r != '#' {
+				_,_= s.WriteRune('\\')
+			}
 			_,_ = s.WriteRune(r)
 			literal_next = false
 			continue
