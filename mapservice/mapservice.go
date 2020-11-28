@@ -99,7 +99,12 @@ const PROTOCOL_VERSION = "332"
 //
 // Turn on DEBUGGING to get extra information logged during transactions with clients
 //
-const DEBUGGING = false
+const DEBUGGING = true
+//
+// We will terminate clients if they've been idle this many seconds and we have a full
+// channel of messages trying to send to them
+//
+const ClientIdleTimeout = 180
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //  __  __              ____ _ _            _   
@@ -128,6 +133,8 @@ type MapClient struct {
     UnauthenticatedPings int            // number of times we pinged this client withouth authentication
 	CommChannel			chan string		// buffered channel for data to be sent to the client
 	ReadyToClose        bool			// true if we're really finished with this connection now
+	messageBacklogQueue []string		// holding area for backlog of messages waiting to get into channel
+    lock                sync.RWMutex    // controls concurrent access to this structure between goroutines
 }
 
 func (c *MapClient) Username() string {
@@ -252,22 +259,7 @@ func (c *MapClient) Send(values ...string) {
 }
 
 func (c *MapClient) SendRaw(data string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[client %s] caught attempt to write too late to client: %v", c.ClientAddr, r)
-		}
-	}()
-
-	select {
-		case c.CommChannel <- data:
-			if DEBUGGING {
-				log.Printf("[client %s] ... %s", c.ClientAddr, data)
-			}
-		default:
-			log.Printf("[client %s] UNABLE TO SEND \"%s\" (channel is full)", c.ClientAddr, data)
-			log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
-			c.Close()
-	}
+	c.sendToClientChannel(data)
 }
 
 //
@@ -279,12 +271,6 @@ func (c *MapClient) SendWithExtraData(ev *MapEvent) {
 }
 
 func (c *MapClient) _send_event(extra_data []string, values ...string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[client %s] caught attempt to write too late to client: %v", c.ClientAddr, r)
-		}
-	}()
-
 	if c.AcceptedList != nil {
 		ok_to_send := false
 		for _, allowed_type := range c.AcceptedList {
@@ -307,19 +293,7 @@ func (c *MapClient) _send_event(extra_data []string, values ...string) {
 		if strings.ContainsAny(message, "\n\r") {
 			log.Printf("[client %s] ERROR packaging data to be transmitted: message would contain newlines (%v)", c.ClientAddr, values)
 		} else {
-			if DEBUGGING {
-				log.Printf("[client %s] -> %v", c.ClientAddr, message)
-			}
-			select {
-				case c.CommChannel <- message:
-					if DEBUGGING {
-						log.Printf("[client %s] ... %s", c.ClientAddr, message)
-					}
-				default:
-					log.Printf("[client %s] UNABLE TO SEND \"%s\" (channel is full)", c.ClientAddr, message)
-					log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
-					c.Close()
-			}
+			c.sendToClientChannel(message)
 		}
 	}
 
@@ -353,6 +327,60 @@ func (c *MapClient) SendRawToOthers(values string) {
 			aClient.SendRaw(values)
 		}
 	}
+}
+
+//
+// Send a message to a client.
+//
+// For efficiency, we have a buffered channel that feeds each
+// client, but it's possible that a channel could fill up if a
+// client doesn't keep up by reading messages as fast as we
+// send them. We don't want the server (or any goroutine serving
+// other client requests) to block on the full channel, creating
+// a denial-of-service condition, so we'll fall back to storing the
+// extra messages in a local queue for that client.  This is more
+// expensive and requires locking, so we don't do that for all
+// messages--just in case our channel fills up, which should not
+// happen often if the buffers are sized appropriately.
+// However, we also don't want this backlog to go on too long either,
+// so we will check to see if a client we're queuing up messages for
+// hasn't responded to our pings for a while, and will eventually give
+// up on it if it really does look like they're not able to keep up.
+//
+func (c *MapClient) sendToClientChannel(data string) {
+	c.lock.RLock()
+	queueing := c.messageBacklogQueue != nil
+	c.lock.RUnlock()
+
+	if queueing {
+		// If we're already queueing messages, just add to the backlog
+		c.queueMessage(data)
+	}
+
+	select {
+		case c.CommChannel <- data:
+			if DEBUGGING {
+				log.Printf("[client %s] chan<-%s", c.ClientAddr, data)
+			}
+
+		default:
+			if time.Now().Unix() - c.LastPolo > ClientIdleTimeout {
+				log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
+				c.Close()
+			} else {
+				// queue this message up 
+				c.queueMessage(data)
+			}
+	}
+}
+
+func (c *MapClient) queueMessage(data string) {
+	if DEBUGGING {
+		log.Printf("[client %s] queued %s", c.ClientAddr, data)
+	}
+	c.lock.Lock()
+	c.messageBacklogQueue = append(c.messageBacklogQueue, data)
+	c.lock.Unlock()
 }
 
 //
@@ -447,6 +475,8 @@ func (c *MapClient) ConnResponse() {
 // from our channel.
 //
 func (c *MapClient) backgroundSender() {
+	checkForBacklog := false
+
 	if DEBUGGING {
 		log.Printf("[client %s] launched backgroundSender", c.ClientAddr)
 	}
@@ -466,8 +496,47 @@ FeedClient:
 					}
 					c.Connection.Write([]byte(message + "\n"))
 				}
+				if len(c.CommChannel) == 0 {
+					checkForBacklog = true
+				}
+		}
+
+		if checkForBacklog {
+			// To avoid spinning here repeatedly checking the queue status, we will
+			// only check after reading from the channel. This means we'll
+			// set checkForBacklog when, and only when, we just drained the
+			// channel, which will cause us to check the queue once to see if
+			// we should re-fill the channel from it. (Other concurrent routines
+			// won't be sending to the channel in the mean time if the queue
+			// of backlogged messages will not be empty.)
+			checkForBacklog = false
+			c.lock.Lock()
+			if c.messageBacklogQueue != nil {
+				if len(c.messageBacklogQueue) > 0 {
+drainBacklog:
+					for {
+						select {
+							case c.CommChannel <- c.messageBacklogQueue[0]:
+								if len(c.messageBacklogQueue) > 1 {
+									c.messageBacklogQueue = c.messageBacklogQueue[1:]
+								} else {
+									c.messageBacklogQueue = nil
+									break drainBacklog
+								}
+
+							default:
+								// no more will fit, stop here
+								break drainBacklog
+						}
+					}
+				} else {
+					c.messageBacklogQueue = nil
+				}
+			}
+			c.lock.Unlock()
 		}
 	}
+
 	if DEBUGGING {
 		log.Printf("[client %s] stopped backgroundSender", c.ClientAddr)
 	}
