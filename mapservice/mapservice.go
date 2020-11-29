@@ -2069,6 +2069,7 @@ func (ms *MapService) LoadState() error {
 				rawdata, actual_msgid, msgid)
 		}
 		ms.ChatHistory = append(ms.ChatHistory, event)
+		AdvanceMessageId(actual_msgid)
 	}
 	result.Close()
 

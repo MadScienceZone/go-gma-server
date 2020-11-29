@@ -148,6 +148,21 @@ var map_event_checklist map[string]map_event_parameters
 var next_message_id int = 0
 var message_id_lock sync.Mutex
 
+//
+// If we load some existing messages, we need to ensure that
+// any subsequent messages are assigned IDs greater than the
+// last known highest ID.
+//
+// This function advances the next message ID past that last known
+// one.
+//
+func AdvanceMessageId(lastKnownId int) {
+	if next_message_id <= lastKnownId {
+		next_message_id = lastKnownId + 1
+	}
+}
+
+
 func init() {
 	next_message_id = int(time.Now().Unix() - MESSAGE_ID_EPOCH)
 
