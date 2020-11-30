@@ -63,6 +63,7 @@ package mapservice
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +148,21 @@ type map_event_parameters struct {
 var map_event_checklist map[string]map_event_parameters
 var next_message_id int = 0
 var message_id_lock sync.Mutex
+
+//
+// If we load some existing messages, we need to ensure that
+// any subsequent messages are assigned IDs greater than the
+// last known highest ID.
+//
+// This function advances the next message ID past that last known
+// one.
+//
+func AdvanceMessageId(lastKnownId int) {
+	if next_message_id <= lastKnownId {
+		next_message_id = lastKnownId + 1
+	}
+}
+
 
 func init() {
 	next_message_id = int(time.Now().Unix() - MESSAGE_ID_EPOCH)
@@ -249,7 +265,8 @@ func NewMapEventFromList(raw string, fields []string, obj_id string, obj_class s
 			if ev.ID == "" {
 				ev.ID = ev.Fields[1]
 			} else if ev.ID != ev.Fields[1] {
-				return nil, fmt.Errorf("MapEvent: OA record is for object ID %s but applied to ID %s", ev.Fields[1], ev.ID)
+				log.Printf("MapEvent: Warning: OA record is for object ID %s but applied to ID %s", ev.Fields[1], ev.ID)
+				ev.ID = ev.Fields[1]
 			}
 			// get the list of attributes we're changing here
 			attr_val, err := ParseTclList(ev.Fields[2])
@@ -270,7 +287,8 @@ func NewMapEventFromList(raw string, fields []string, obj_id string, obj_class s
 			if ev.ID == "" {
 				ev.ID = ev.Fields[1]
 			} else if ev.ID != ev.Fields[1] {
-				return nil, fmt.Errorf("MapEvent: %s record is for object ID %s but applied to ID %s", ev.EventType(), ev.Fields[1], ev.ID)
+				log.Printf("MapEvent: Warning: %s record is for object ID %s but applied to ID %s", ev.EventType(), ev.Fields[1], ev.ID)
+				ev.ID = ev.Fields[1]
 			}
 			// get the list of values we're changing here
 			attr_val, err := ParseTclList(ev.Fields[3])

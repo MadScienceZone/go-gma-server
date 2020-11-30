@@ -610,11 +610,6 @@ func (ms *MapService) AllClients() []*MapClient {
 //
 func (ms *MapService) Run() {
 	var err error
-	if err != nil {
-		log.Printf("Unable to create a DieRoller! (%v)", err)
-		ms.EmergencyStop()
-		return
-	}
 	//
 	// load all user presets into memory for quick recall later
 	//
@@ -2005,15 +2000,24 @@ func strip_creature_base_name(name string) string {
 // s=string
 
 func (ms *MapService) LoadState() error {
+	var err error
+	var result, subresult *sql.Rows
+	var event *MapEvent
+	var actual_msgid int
+
 	if ms.Database == nil {
+		log.Printf("LoadState: no database open")
 		return fmt.Errorf("LoadState: no database open")
 	}
 	ms.lock.Lock()
 	ms.EventHistory = make(map[string]*MapEvent)
-	result, err := ms.Database.Query(`
+	result, err = ms.Database.Query(`
 		select eventid, rawdata, sequence, key, class, objid 
 		from events`)
-	if err != nil { goto load_err }
+	if err != nil {
+		log.Printf("LoadState: error loading from events table: %v", err)
+		goto load_err
+	}
 	for result.Next() {
 		var eventid  int64
 		var rawdata  string
@@ -2023,22 +2027,34 @@ func (ms *MapService) LoadState() error {
 		var objid    string
 		var extra    string
 		err = result.Scan(&eventid, &rawdata, &sequence, &key, &class, &objid)
-		if err != nil { goto load_err }
-		event, err := NewMapEvent(rawdata, objid, class)
-		if err != nil { goto load_err }
+		if err != nil {
+			log.Printf("LoadState: error scanning results from events table: %v", err)
+			goto load_err
+		}
+		event, err = NewMapEvent(rawdata, objid, class)
+		if err != nil {
+			log.Printf("LoadState: error constructing new map event from \"%s\" (id %v, class %v): %v", rawdata, objid, class, err)
+			goto load_err
+		}
 		event.Sequence = int(sequence)
 		if event.Key != key {
 			fmt.Printf("Warning: Loaded event #%d (seq %d) has key %s but we think it should be %s", eventid, sequence, key, event.Key)
 		}
-		subresult, err := ms.Database.Query(`
+		subresult, err = ms.Database.Query(`
 			select datarow from extradata
 				where extradata.eventid = ?
 				order by extraid
 		`, eventid)
-		if err != nil { goto load_err }
+		if err != nil {
+			log.Printf("LoadState: error querying extradata for event id %v: %v", eventid, err)
+			goto load_err
+		}
 		for subresult.Next() {
 			err = subresult.Scan(&extra)
-			if err != nil { goto load_err }
+			if err != nil {
+				log.Printf("LoadState: error scanning extradata value for event id %v: %v", eventid, err)
+				goto load_err
+			}
 			event.MultiRawData = append(event.MultiRawData, extra)
 		}
 		subresult.Close()
@@ -2051,15 +2067,24 @@ func (ms *MapService) LoadState() error {
 
 	ms.ChatHistory = nil
 	result, err = ms.Database.Query(`select rawdata, msgid from chats`)
-	if err != nil { goto load_err }
+	if err != nil {
+		log.Printf("LoadState: error querying chats table: %v", err)
+		goto load_err
+	}
 	for result.Next() {
 		var rawdata  string
 		var msgid    int
 		err = result.Scan(&rawdata, &msgid)
-		if err != nil { goto load_err }
-		event, err := NewMapEvent(rawdata, "", "")
-		if err != nil { goto load_err }
-		actual_msgid, err := event.MessageID()
+		if err != nil {
+			log.Printf("LoadState: error scanning result of chats table query: %v", err)
+			goto load_err
+		}
+		event, err = NewMapEvent(rawdata, "", "")
+		if err != nil {
+			log.Printf("LoadState: error creating new map event for \"%s\": %v", rawdata, err)
+			goto load_err
+		}
+		actual_msgid, err = event.MessageID()
 		if err != nil {
 			log.Printf("Warning: skipping restored chat message %s with no apparent message ID", rawdata)
 			continue
@@ -2069,42 +2094,61 @@ func (ms *MapService) LoadState() error {
 				rawdata, actual_msgid, msgid)
 		}
 		ms.ChatHistory = append(ms.ChatHistory, event)
+		AdvanceMessageId(actual_msgid)
 	}
 	result.Close()
 
 	ms.ImageList = make(map[string]string)
 	result, err = ms.Database.Query(`select name, zoom, location from images`)
-	if err != nil { goto load_err }
+	if err != nil {
+		log.Printf("LoadState: error querying images table: %v", err)
+		goto load_err
+	}
 	for result.Next() {
 		var name string
 		var zoom string
 		var location string
 		err = result.Scan(&name, &zoom, &location)
-		if err != nil { goto load_err }
+		if err != nil {
+			log.Printf("LoadState: error scanning image table: %v", err)
+			goto load_err
+		}
 		ms.ImageList[name + "‖" + zoom] = location
 	}
 	result.Close()
 
 	ms.IdByName = make(map[string]string)
 	result, err = ms.Database.Query(`select name, objid from idbyname`)
-	if err != nil { goto load_err }
+	if err != nil {
+		log.Printf("LoadState: error querying idbyname table: %v", err)
+		goto load_err
+	}
 	for result.Next() {
 		var name string
 		var objid string
 		err = result.Scan(&name, &objid)
-		if err != nil { goto load_err }
+		if err != nil {
+			log.Printf("LoadState: error scanning idbyname: %v", err)
+			goto load_err
+		}
 		ms.IdByName[name] = objid
 	}
 	result.Close()
 
 	ms.ClassById = make(map[string]string)
 	result, err = ms.Database.Query(`select objid, class from classbyid`)
-	if err != nil { goto load_err }
+	if err != nil {
+		log.Printf("LoadState: error querying classbyid table: %v", err)
+		goto load_err
+	}
 	for result.Next() {
 		var class string
 		var objid string
 		err = result.Scan(&objid, &class)
-		if err != nil { goto load_err }
+		if err != nil {
+			log.Printf("LoadState: error scanning classbyid: %v", err)
+			goto load_err
+		}
 		ms.ClassById[objid] = class
 	}
 	result.Close()
@@ -2114,10 +2158,18 @@ func (ms *MapService) LoadState() error {
 
 load_err:
 	ms.lock.Unlock()
-	return fmt.Errorf("Error writing to game state database (%v)", err)
+	return fmt.Errorf("Error reading from game state database (%v)", err)
 }
 
 func (ms *MapService) SaveState() error {
+	var err error
+	var tx *sql.Tx
+	var event, chat *MapEvent
+	var rawdata, extra string
+	var res sql.Result
+	var eventid int64
+	var msgid int
+
 	if ms.Database == nil {
 		return fmt.Errorf("SaveState: no database open")
 	}
@@ -2126,12 +2178,12 @@ func (ms *MapService) SaveState() error {
 		return nil
 	}
 
-	tx, err := ms.Database.Begin()
+	tx, err = ms.Database.Begin()
 	if err != nil {
 		return fmt.Errorf("SaveState: Unable to start transaction: %v", err)
 	}
 
-	if _, err := tx.Exec(`
+	if _, err = tx.Exec(`
 		delete from events;
 		delete from extradata;
 		delete from chats;
@@ -2141,28 +2193,28 @@ func (ms *MapService) SaveState() error {
 	`); err != nil { goto bail_out }
 
 	ms.lock.RLock()
-	for _, event := range ms.EventHistory {
-		rawdata, err := event.RawEventText()
+	for _, event = range ms.EventHistory {
+		rawdata, err = event.RawEventText()
 		if err != nil { goto save_err }
-		res, err := tx.Exec(`insert into events (rawdata, sequence, key, class, objid)
+		res, err = tx.Exec(`insert into events (rawdata, sequence, key, class, objid)
 			values (?, ?, ?, ?, ?)`,
 			rawdata, event.Sequence, event.Key, event.Class, event.ID)
 		if err != nil { goto save_err }
-		eventid, err := res.LastInsertId()
+		eventid, err = res.LastInsertId()
 		if err != nil { goto save_err }
-		for _, extra := range event.MultiRawData {
-			if _, err := tx.Exec(`insert into extradata (eventid, datarow) values (?, ?)`,
+		for _, extra = range event.MultiRawData {
+			if _, err = tx.Exec(`insert into extradata (eventid, datarow) values (?, ?)`,
 				eventid, extra); err != nil {
 				goto save_err
 			}
 		}
 	}
-	for _, chat := range ms.ChatHistory {
-		msgid, err := chat.MessageID()
+	for _, chat = range ms.ChatHistory {
+		msgid, err = chat.MessageID()
 		if err != nil { goto save_err }
-		rawdata, err := chat.RawEventText()
+		rawdata, err = chat.RawEventText()
 		if err != nil { goto save_err }
-		if _, err := tx.Exec(`insert into chats (rawdata, msgid) values (?, ?)`,
+		if _, err = tx.Exec(`insert into chats (rawdata, msgid) values (?, ?)`,
 			rawdata, msgid); err != nil {
 			goto save_err
 		}
@@ -2174,17 +2226,17 @@ func (ms *MapService) SaveState() error {
 			log.Printf("ImageList entry has invalid key \"%s\"", k)
 			continue
 		}
-		_, err := tx.Exec(`insert into images (name, zoom, location) values (?, ?, ?)`, parts[0], parts[1], location)
+		_, err = tx.Exec(`insert into images (name, zoom, location) values (?, ?, ?)`, parts[0], parts[1], location)
 		if err != nil { goto save_err }
 	}
 
 	for k, v := range ms.IdByName {
-		_, err := tx.Exec(`insert into idbyname (name, objid) values (?, ?)`, k, v)
+		_, err = tx.Exec(`insert into idbyname (name, objid) values (?, ?)`, k, v)
 		if err != nil { goto save_err }
 	}
 
 	for k, v := range ms.ClassById {
-		_, err := tx.Exec(`insert into classbyid (objid, class) values (?, ?)`, k, v)
+		_, err = tx.Exec(`insert into classbyid (objid, class) values (?, ?)`, k, v)
 		if err != nil { goto save_err }
 	}
 
