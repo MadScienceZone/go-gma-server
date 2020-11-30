@@ -63,6 +63,7 @@ package mapservice
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -264,7 +265,8 @@ func NewMapEventFromList(raw string, fields []string, obj_id string, obj_class s
 			if ev.ID == "" {
 				ev.ID = ev.Fields[1]
 			} else if ev.ID != ev.Fields[1] {
-				return nil, fmt.Errorf("MapEvent: OA record is for object ID %s but applied to ID %s", ev.Fields[1], ev.ID)
+				log.Printf("MapEvent: Warning: OA record is for object ID %s but applied to ID %s", ev.Fields[1], ev.ID)
+				ev.ID = ev.Fields[1]
 			}
 			// get the list of attributes we're changing here
 			attr_val, err := ParseTclList(ev.Fields[2])
@@ -285,7 +287,8 @@ func NewMapEventFromList(raw string, fields []string, obj_id string, obj_class s
 			if ev.ID == "" {
 				ev.ID = ev.Fields[1]
 			} else if ev.ID != ev.Fields[1] {
-				return nil, fmt.Errorf("MapEvent: %s record is for object ID %s but applied to ID %s", ev.EventType(), ev.Fields[1], ev.ID)
+				log.Printf("MapEvent: Warning: %s record is for object ID %s but applied to ID %s", ev.EventType(), ev.Fields[1], ev.ID)
+				ev.ID = ev.Fields[1]
 			}
 			// get the list of values we're changing here
 			attr_val, err := ParseTclList(ev.Fields[3])
