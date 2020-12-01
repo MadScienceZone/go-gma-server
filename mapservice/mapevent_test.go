@@ -109,7 +109,7 @@ func TestMapEvent(t *testing.T) {
 		{raw: "OA foo {xx 1 yy 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz"},
 		{raw: "OA foo {yy 1 xx 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz"},
 		{raw: "OA foo {yy 1 xx 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz", oid: "foo", err: false},
-		{raw: "OA foo {yy 1 xx 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz", oid: "bar", err: true},
+		{raw: "OA foo {yy 1 xx 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz", oid: "bar", err: false},
 		{raw: "OA foo {yy 1 xx 2 zz 3} a",etype: "OA",  key: "OA:foo:xx:yy:zz", err: true},
 		{raw: "OA foo {{y}y 1 xx 2 zz 3}",etype: "OA",  key: "OA:foo:xx:yy:zz", err: true},
 		{raw: "OA foo",etype: "OA",  key: "OA:foo:xx:yy:zz", err: true},
