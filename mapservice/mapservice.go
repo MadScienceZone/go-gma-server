@@ -679,7 +679,9 @@ func (ms *MapService) PingAll() bool {
 		client.Send("MARCO")
 		i++
 	}
-	log.Printf("Pinged %d client%s", i, plural(i))
+	if i > 0 {
+		log.Printf("Pinged %d client%s", i, plural(i))
+	}
 	return i > 0
 }
 
