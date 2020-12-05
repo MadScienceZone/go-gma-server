@@ -260,7 +260,7 @@ func (c *MapClient) AuthenticateUser() error {
 // to a single client
 //
 func (c *MapClient) Send(values ...string) {
-	c._send_event(nil, values...)
+	c._send_event(nil, values)
 }
 
 func (c *MapClient) SendRaw(data string) {
@@ -272,10 +272,10 @@ func (c *MapClient) SendRaw(data string) {
 // block-data events (e.g., LS)
 //
 func (c *MapClient) SendWithExtraData(ev *MapEvent) {
-	c._send_event(ev.MultiRawData, ev.Fields...)
+	c._send_event(ev.MultiRawData, ev.Fields)
 }
 
-func (c *MapClient) _send_event(extra_data []string, values ...string) {
+func (c *MapClient) _send_event(extra_data []string, values []string) {
 	if c.AcceptedList != nil {
 		ok_to_send := false
 		for _, allowed_type := range c.AcceptedList {
@@ -426,7 +426,12 @@ func (c *MapClient) NextEvent() (*MapEvent, error) {
 		if t == "" {
 			continue	// ignore blank input lines
 		}
-		return NewMapEvent(t, "", "")
+		new_event, err := NewMapEvent(t, "", "")
+		if err != nil {
+			log.Printf("[client %s] Error in incoming event: %v", c.ClientAddr, err)
+			continue
+		}
+		return new_event, nil
 	}
 	err := c.Scanner.Err()
 	if err == nil {
@@ -981,7 +986,12 @@ func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 			if event.Fields[1] == "*" {
 				thisClient.AcceptedList = nil
 			} else {
-				thisClient.AcceptedList = event.Fields[1:]
+				allowed, err := ParseTclList(event.Fields[1])
+				if err != nil {
+					log.Printf("[client %s] Error understanding ACCEPT command: %v", thisClient.ClientAddr, err)
+				} else {
+					thisClient.AcceptedList = allowed
+				}
 			}
 			log.Printf("[client %s] accepting %v", thisClient.ClientAddr, thisClient.AcceptedList)
 
