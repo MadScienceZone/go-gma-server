@@ -12,6 +12,29 @@
 #                                                                                      #
 ########################################################################################
 */
+
+//
+// Unit tests for the map service
+//
+
+package mapservice
+
+import "testing"
+
+// Ensure that the supported version of the service protocol
+// matches the one that the rest of the GMA suite believes to
+// be the current version.
+func TestMapService_CurrentProtocol(t *testing.T) {
+	var GMAMapperProtocol string
+
+	GMAMapperProtocol="332"		// @@##@@ AUTOMATICALLY MAINTAINED; DO NOT CHANGE MANUALLY
+
+	if GMAMapperProtocol != PROTOCOL_VERSION {
+		t.Fatalf("We support protocol %s but GMA uses %s.",
+			PROTOCOL_VERSION, GMAMapperProtocol)
+	}
+}
+
 // @[00]@| GMA 4.2.2
 // @[01]@|
 // @[10]@| Copyright © 1992–2020 by Steven L. Willoughby
@@ -51,26 +74,3 @@
 // @[51]@| the safety of lives or property would be at risk due to failure or
 // @[52]@| defect of the software.
 //
-
-//
-// Unit tests for the map service
-//
-
-package mapservice
-
-import "testing"
-
-// Ensure that the supported version of the service protocol
-// matches the one that the rest of the GMA suite believes to
-// be the current version.
-func TestMapService_CurrentProtocol(t *testing.T) {
-	var GMAMapperProtocol string
-
-	GMAMapperProtocol="332"		// @@##@@ AUTOMATICALLY MAINTAINED; DO NOT CHANGE MANUALLY
-
-	if GMAMapperProtocol != PROTOCOL_VERSION {
-		t.Fatalf("We support protocol %s but GMA uses %s.",
-			PROTOCOL_VERSION, GMAMapperProtocol)
-	}
-}
-
