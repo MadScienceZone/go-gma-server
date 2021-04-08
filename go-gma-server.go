@@ -33,11 +33,9 @@ package main
 import (
 	"bufio"
 	"database/sql"
-	_ "github.com/mattn/go-sqlite3"
 	"flag"
 	"fmt"
 	"log"
-	"./mapservice"
 	"net"
 	"os"
 	"os/signal"
@@ -45,14 +43,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/fizban-of-ragnarok/go-gma-server/mapservice"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
-
 func eventMonitor(sig_chan chan os.Signal, stop_chan chan int,
-                  ms *mapservice.MapService, saveInterval int) {
+	ms *mapservice.MapService, saveInterval int) {
 
 	report_interval := 1
-	ping_count := 0
 	var save_signal *time.Ticker
 
 	if saveInterval <= 0 {
@@ -71,68 +71,62 @@ func eventMonitor(sig_chan chan os.Signal, stop_chan chan int,
 
 	for {
 		select {
-			case s := <-sig_chan:
-				log.Printf("Received signal %v", s)
-				switch s {
-					case syscall.SIGHUP:
-						stop_chan <- 1
+		case s := <-sig_chan:
+			log.Printf("Received signal %v", s)
+			switch s {
+			case syscall.SIGHUP:
+				stop_chan <- 1
 
-					case syscall.SIGUSR1:
-						ms.DumpState()
+			case syscall.SIGUSR1:
+				ms.DumpState()
 
-					case syscall.SIGUSR2:
-						log.Printf("**SAVE** due to signal")
-						if err := ms.SaveState(); err != nil {
-							log.Printf("Error saving game state: %v", err)
-						}
-
-					case syscall.SIGINT:
-						// Make a quick effort to shut down as fast as possible
-						// by terminating all client connections immediately.
-						log.Printf("EMERGENCY SHUTDOWN INITIATED")
-						ms.AcceptIncoming = false
-						for i, client := range ms.Clients {
-							log.Printf("Terminating client %v from %s", i, client.ClientAddr)
-							client.Connection.Close()
-						}
-						stop_chan <- 1
+			case syscall.SIGUSR2:
+				log.Printf("**SAVE** due to signal")
+				if err := ms.SaveState(); err != nil {
+					log.Printf("Error saving game state: %v", err)
 				}
 
-			case t := <-save_signal.C:
-				// suppress messages and unnecessary saves
-				// if we're idling
-				if ms.SaveNeeded || report_interval <= 1 {
-					log.Printf("***SAVE*** due to timer %v", t)
-					if err := ms.SaveState(); err != nil {
-						log.Printf("Error saving game state: %v", err)
-					}
+			case syscall.SIGINT:
+				// Make a quick effort to shut down as fast as possible
+				// by terminating all client connections immediately.
+				log.Printf("EMERGENCY SHUTDOWN INITIATED")
+				ms.AcceptIncoming = false
+				for i, client := range ms.Clients {
+					log.Printf("Terminating client %v from %s", i, client.ClientAddr)
+					client.Connection.Close()
 				}
+				stop_chan <- 1
+			}
 
-			case <-ping_signal.C:
-				// Go doesn't get Ticker.Reset() until a future version, so
-				// we'll just locally choose to respond to fewer of them
-				// than reset the interval here.
-				ping_count++
-				any_connections := ms.PingAll()
-				if ping_count % report_interval == 0 {
-					if any_connections {
-						if report_interval > 1 {
-							report_interval = 1
-							log.Printf("Activity detected; reset ping timer to 1 minute")
-							//ping_signal.Reset(1 * time.Minute)
-						}
-					} else {
-						new_interval := report_interval * 2
-						if new_interval > 60 {
-							new_interval = 60
-						}
-						if new_interval != report_interval {
-							report_interval = new_interval
-							log.Printf("No connections; backing off ping timer to %d minutes", new_interval)
-							//ping_signal.Reset(time.Duration(new_interval) * time.Minute)
-						}
-					}
+		case t := <-save_signal.C:
+			// suppress messages and unnecessary saves
+			// if we're idling
+			if ms.SaveNeeded || report_interval <= 1 {
+				log.Printf("***SAVE*** due to timer %v", t)
+				if err := ms.SaveState(); err != nil {
+					log.Printf("Error saving game state: %v", err)
 				}
+			}
+
+		case <-ping_signal.C:
+			any_connections := ms.PingAll()
+			if any_connections {
+				if report_interval > 1 {
+					report_interval = 1
+					log.Printf("Activity detected; reset ping timer to 1 minute")
+					ping_signal.Reset(1 * time.Minute)
+				}
+			} else {
+				new_interval := report_interval * 2
+				if new_interval > 60 {
+					new_interval = 60
+				}
+				if new_interval != report_interval {
+					report_interval = new_interval
+					log.Printf("No connections; backing off ping timer to %d minutes", new_interval)
+					ping_signal.Reset(time.Duration(new_interval) * time.Minute)
+				}
+			}
 		}
 	}
 }
@@ -142,16 +136,16 @@ func main() {
 	var err error
 
 	// Automatically generated version numbers
-	GMAVersionNumber="4.2.2"	// @@##@@
-	GMAMapperProtocol="332"		// @@##@@
+	GMAVersionNumber = "4.2.2" // @@##@@
+	GMAMapperProtocol = "332"  // @@##@@
 
 	passfile := flag.String("password-file", "", "get passwords from the designated file")
-	port     := flag.Int("port", 2323, "TCP port of map service")
-	logfile  := flag.String("log-file", "", "log connections and other info to this file")
+	port := flag.Int("port", 2323, "TCP port of map service")
+	logfile := flag.String("log-file", "", "log connections and other info to this file")
 	initfile := flag.String("init-file", "", "initial commands to send all clients upon connection")
-	saveint  := flag.Int("save-interval", 10, "frequency at which to save game state")
+	saveint := flag.Int("save-interval", 10, "frequency at which to save game state")
 	sqlitedb := flag.String("sqlite", "", "use the named sqlite3 database for persistent storage")
-	mysqldb  := flag.String("mysql", "", "use the named mysql database for persistent storage")
+	mysqldb := flag.String("mysql", "", "use the named mysql database for persistent storage")
 	flag.Parse()
 
 	if *logfile != "" {
@@ -266,13 +260,13 @@ func main() {
 	}
 
 	// set up authentication
-	var groupPassword    []byte
-	var gmPassword       []byte
+	var groupPassword []byte
+	var gmPassword []byte
 	personalPasswords := make(map[string][]byte)
 
 	if *passfile != "" {
 		// The password file contains the group password
-		// and (optionally) gm password. Other personal 
+		// and (optionally) gm password. Other personal
 		// ones are stored in the database (if they are used)
 		fp, err := os.Open(*passfile)
 		if err != nil {
@@ -316,15 +310,14 @@ func main() {
 	stop_channel := make(chan int, 1)
 	signal.Notify(sig_channel, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGINT)
 
-
 	ms := mapservice.MapService{
 		IncomingListener:  incoming,
 		Database:          sqldb,
 		PlayerGroupPass:   groupPassword,
 		GmPass:            gmPassword,
 		PersonalPasswords: personalPasswords,
-		Clients:		   make(map[string]*mapservice.MapClient),
-		InitFile:         *initfile,
+		Clients:           make(map[string]*mapservice.MapClient),
+		InitFile:          *initfile,
 		EventHistory:      make(map[string]*mapservice.MapEvent),
 		ImageList:         make(map[string]string),
 		StopChannel:       stop_channel,
@@ -339,6 +332,7 @@ func main() {
 	ms.Shutdown()
 	log.Printf("server shut down")
 }
+
 // @[00]@| GMA 4.2.2
 // @[01]@|
 // @[10]@| Copyright © 1992–2020 by Steven L. Willoughby
