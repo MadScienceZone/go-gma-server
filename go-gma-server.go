@@ -336,7 +336,7 @@ func main() {
 // @[00]@| GMA 4.2.2
 // @[01]@|
 // @[10]@| Copyright © 1992–2020 by Steven L. Willoughby
-// @[11]@| (AKA Software Alchemy), Aloha, Oregon, USA. All Rights Reserved.
+// @[11]@| (AKA MadScienceZone), Aloha, Oregon, USA. All Rights Reserved.
 // @[12]@| Distributed under the terms and conditions of the BSD-3-Clause
 // @[13]@| License as described in the accompanying LICENSE file distributed
 // @[14]@| with GMA.
