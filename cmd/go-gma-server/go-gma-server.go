@@ -1,4 +1,3 @@
-// vi:set ai sm nu ts=4 sw=4 fileencoding=utf-8:
 /*
 ########################################################################################
 #  _______  _______  _______                ___       _______     _______              #
@@ -44,14 +43,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fizban-of-ragnarok/go-gma-server/mapservice"
+	"internal/mapservice"
+
+	"github.com/MadScienceZone/go-gma-server/mapservice"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func eventMonitor(sig_chan chan os.Signal, stop_chan chan int,
-	ms *mapservice.MapService, saveInterval int) {
-
+//
+// eventMonitor responds to signals and timers that affect our overall operation
+// independent of client requests.
+//
+func eventMonitor(sig_chan chan os.Signal, stop_chan chan int, ms *mapservice.MapService, saveInterval int) {
 	report_interval := 1
 	var save_signal *time.Ticker
 
@@ -137,12 +140,13 @@ func main() {
 
 	// Automatically generated version numbers
 	GMAVersionNumber = "4.2.2" // @@##@@
-	GMAMapperProtocol = "332"  // @@##@@
+	GMAMapperProtocol = "400"  // @@##@@
 
 	passfile := flag.String("password-file", "", "get passwords from the designated file")
 	port := flag.Int("port", 2323, "TCP port of map service")
 	logfile := flag.String("log-file", "", "log connections and other info to this file")
-	initfile := flag.String("init-file", "", "initial commands to send all clients upon connection")
+	initfile := flag.String("init-file", "", "initial commands to send all clients upon authentication")
+	greetfile := flag.String("greet-file", "", "initial server greeting sent to clients upon connection")
 	saveint := flag.Int("save-interval", 10, "frequency at which to save game state")
 	sqlitedb := flag.String("sqlite", "", "use the named sqlite3 database for persistent storage")
 	mysqldb := flag.String("mysql", "", "use the named mysql database for persistent storage")
@@ -318,6 +322,7 @@ func main() {
 		PersonalPasswords: personalPasswords,
 		Clients:           make(map[string]*mapservice.MapClient),
 		InitFile:          *initfile,
+		GreetFile:         *greetfile,
 		EventHistory:      make(map[string]*mapservice.MapEvent),
 		ImageList:         make(map[string]string),
 		StopChannel:       stop_channel,

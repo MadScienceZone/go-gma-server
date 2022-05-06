@@ -1,4 +1,4 @@
-module github.com/fizban-of-ragnarok/go-gma-server
+module github.com/MadScienceZone/go-gma-server
 
 go 1.16
 

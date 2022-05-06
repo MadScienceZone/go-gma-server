@@ -7,8 +7,7 @@ This is a work in progress. It represents an expanded and reworked
 version of my initial stab at a Go port of the original Python server,
 now that the newer protocol and supporting API have been better defined.
 
-# Previous unversioned work
-This is a personal side project, and the Go implementation was done in spare time
+This is a personal side project, and the initial Go implementation was done in spare time
 over a week or so, so I'm not saying this is a thoroughly designed and tested
 commercial-grade product, but rather it does demonstrate something I created
 using Go that is simple enough to look at as an isolated sample, yet still

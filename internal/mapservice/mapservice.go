@@ -1,4 +1,3 @@
-// vi:set ai sm nu ts=4 sw=4 fileencoding=utf-8:
 /*
 ########################################################################################
 #  _______  _______  _______                ___       _______     _______              #
@@ -33,10 +32,10 @@ package mapservice
 import (
 	"bufio"
 	"crypto/sha256"
-	"encoding/base64"
 	"database/sql"
-	"log"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"regexp"
@@ -46,6 +45,7 @@ import (
 	"sync"
 	"time"
 )
+
 //
 // PROTOCOL_VERSION is the version of the client/server protocol this implementation uses.
 // This is a manually-set value rather than getting set automatically by
@@ -54,17 +54,19 @@ import (
 // code is _expected_ to use). We have a unit tests that flags if this value
 // isn't the same as what set_version is set to expect.
 //
-const PROTOCOL_VERSION = "332"
+const PROTOCOL_VERSION = "400"
 
 //
 // Turn on DEBUGGING to get extra information logged during transactions with clients
 //
 const DEBUGGING = false
+
 //
 // We will terminate clients if they've been idle this many seconds and we have a full
 // channel of messages trying to send to them
 //
 const ClientIdleTimeout = 180
+
 //
 // Number of messages which can be buffered in a client channel before we resort to
 // more expensive queuing
@@ -72,34 +74,34 @@ const ClientIdleTimeout = 180
 const CommChannelBufferSize = 256
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//  __  __              ____ _ _            _   
-// |  \/  | __ _ _ __  / ___| (_) ___ _ __ | |_ 
+//  __  __              ____ _ _            _
+// |  \/  | __ _ _ __  / ___| (_) ___ _ __ | |_
 // | |\/| |/ _` | '_ \| |   | | |/ _ \ '_ \| __|
-// | |  | | (_| | |_) | |___| | |  __/ | | | |_ 
+// | |  | | (_| | |_) | |___| | |  __/ | | | |_
 // |_|  |_|\__,_| .__/ \____|_|_|\___|_| |_|\__|
-//              |_|                             
+//              |_|
 //
 // MapClient keeps the context around a single active client connection.
 //
 type MapClient struct {
-    Connection          net.Conn        // this client's socket connection
-    Scanner            *bufio.Scanner   // scanner to collect input lines
-    ClientAddr          string          // IP address of client
-    Service            *MapService      // pointer to the overall map service
-    Auth               *Authenticator   // pointer to the authentication object
-    Authenticated       bool            // true if connection is authenticated (or no authentication is supported)
-    ReachedEOF          bool            // true if we need to shut down this connection
-    AcceptedList        []string        // list of accepted messages for this client (nil to accept all)
-    dice               *DieRoller       // random number generator ala rolling dice
-    WriteOnly           bool            // is this client refusing to listen to incoming messages?
-    IncomingDataType    string          // what multi-command event are we processing? or ""
-    IncomingData        []string        // holding buffer for multi-command sequence of events
-    LastPolo            int64           // last time we heard a POLO response
-    UnauthenticatedPings int            // number of times we pinged this client withouth authentication
-	CommChannel			chan string		// buffered channel for data to be sent to the client
-	ReadyToClose        bool			// true if we're really finished with this connection now
-	messageBacklogQueue []string		// holding area for backlog of messages waiting to get into channel
-    lock                sync.RWMutex    // controls concurrent access to this structure between goroutines
+	Connection           net.Conn       // this client's socket connection
+	Scanner              *bufio.Scanner // scanner to collect input lines
+	ClientAddr           string         // IP address of client
+	Service              *MapService    // pointer to the overall map service
+	Auth                 *Authenticator // pointer to the authentication object
+	Authenticated        bool           // true if connection is authenticated (or no authentication is supported)
+	ReachedEOF           bool           // true if we need to shut down this connection
+	AcceptedList         []string       // list of accepted messages for this client (nil to accept all)
+	dice                 *DieRoller     // random number generator ala rolling dice
+	WriteOnly            bool           // is this client refusing to listen to incoming messages?
+	IncomingDataType     string         // what multi-command event are we processing? or ""
+	IncomingData         []string       // holding buffer for multi-command sequence of events
+	LastPolo             int64          // last time we heard a POLO response
+	UnauthenticatedPings int            // number of times we pinged this client withouth authentication
+	CommChannel          chan string    // buffered channel for data to be sent to the client
+	ReadyToClose         bool           // true if we're really finished with this connection now
+	messageBacklogQueue  []string       // holding area for backlog of messages waiting to get into channel
+	lock                 sync.RWMutex   // controls concurrent access to this structure between goroutines
 }
 
 func (c *MapClient) Username() string {
@@ -111,12 +113,12 @@ func (c *MapClient) Username() string {
 
 //
 // Authentication protocol
-// -> OK <version> <challenge>
-// <- AUTH <response> [<user> [<client>]]
-// -> DENIED <message> 
-// OR -> GRANTED <username>
-// OR -> PRIV <message>
+// -> OK
+// <- AUTH
+// -> DENIED|GRANTED|PRIV
 //
+
+// AuthenticateUser
 func (c *MapClient) AuthenticateUser() error {
 	c.Authenticated = false
 	if c.Auth == nil {
@@ -135,56 +137,56 @@ func (c *MapClient) AuthenticateUser() error {
 			return err
 		}
 		switch event.EventType() {
-			case "POLO": // ignore
-			case "AUTH":
-				if len(event.Fields) >= 3 {
-					c.Auth.Username = event.Fields[2]
-					user_password, ok := c.Service.PersonalPasswords[c.Auth.Username]
-					if ok {
-						c.Auth.SetSecret(user_password)	 // use personal password if one defined for that user
-					}
-				} else {
-					c.Auth.Username = "<unknown>"
+		case "POLO": // ignore
+		case "AUTH":
+			if len(event.Fields) >= 3 {
+				c.Auth.Username = event.Fields[2]
+				user_password, ok := c.Service.PersonalPasswords[c.Auth.Username]
+				if ok {
+					c.Auth.SetSecret(user_password) // use personal password if one defined for that user
 				}
-				if len(event.Fields) >= 4 {
-					c.Auth.Client = event.Fields[3]
-				} else {
-					c.Auth.Client = "<unknown>"
-				}
+			} else {
+				c.Auth.Username = "<unknown>"
+			}
+			if len(event.Fields) >= 4 {
+				c.Auth.Client = event.Fields[3]
+			} else {
+				c.Auth.Client = "<unknown>"
+			}
 
-				successful, err := c.Auth.ValidateResponse(event.Fields[1])
-				if err != nil {
-					log.Printf("[client %s] ERROR validating authentication response \"%s\": %v", c.ClientAddr, event.Fields[1], err)
-					c.Send("DENIED", "Invalid AUTH command format")
-					return err
-				}
-				if !successful {
-					log.Printf("[client %s] ERROR validating authentication response \"%s\": login incorrect", c.ClientAddr, event.Fields[1])
-					c.Send("DENIED", "Login incorrect")
-					return fmt.Errorf("Login incorrect")
-				}
-				if c.Auth.GmMode {
-					c.Auth.Username = "GM"
-					c.Send("GRANTED", "GM")
-					c.Authenticated = true
-					log.Printf("[client %s] Access granted for GM", c.ClientAddr)
-					return nil
-				}
-
-				c.Auth.Username = strings.ToLower(c.Auth.Username)
-				if c.Auth.Username == "gm" {
-					log.Printf("[client %s] Access denied to GM impersonator!", c.ClientAddr)
-					c.Send("DENIED", "You are not the GM.")
-					return fmt.Errorf("Login incorrect")
-				}
-
-				log.Printf("[client %s] Access granted for %s", c.ClientAddr, c.Auth.Username)
-				c.Send("GRANTED", c.Auth.Username)
+			successful, err := c.Auth.ValidateResponse(event.Fields[1])
+			if err != nil {
+				log.Printf("[client %s] ERROR validating authentication response \"%s\": %v", c.ClientAddr, event.Fields[1], err)
+				c.Send("DENIED", "Invalid AUTH command format")
+				return err
+			}
+			if !successful {
+				log.Printf("[client %s] ERROR validating authentication response \"%s\": login incorrect", c.ClientAddr, event.Fields[1])
+				c.Send("DENIED", "Login incorrect")
+				return fmt.Errorf("Login incorrect")
+			}
+			if c.Auth.GmMode {
+				c.Auth.Username = "GM"
+				c.Send("GRANTED", "GM")
 				c.Authenticated = true
+				log.Printf("[client %s] Access granted for GM", c.ClientAddr)
 				return nil
+			}
 
-			default:
-				c.Send("PRIV", "Not authorized for that operation until authenticated.")
+			c.Auth.Username = strings.ToLower(c.Auth.Username)
+			if c.Auth.Username == "gm" {
+				log.Printf("[client %s] Access denied to GM impersonator!", c.ClientAddr)
+				c.Send("DENIED", "You are not the GM.")
+				return fmt.Errorf("Login incorrect")
+			}
+
+			log.Printf("[client %s] Access granted for %s", c.ClientAddr, c.Auth.Username)
+			c.Send("GRANTED", c.Auth.Username)
+			c.Authenticated = true
+			return nil
+
+		default:
+			c.Send("PRIV", "Not authorized for that operation until authenticated.")
 		}
 	}
 }
@@ -197,9 +199,9 @@ func (c *MapClient) AuthenticateUser() error {
 // service code writes to that channel (abandoning clients which
 // aren't responsive enough to avoid the channel filling up. In
 // our overall architecture, clients shouldn't be in that position
-// short of a serious problem, and it's better for a client to 
+// short of a serious problem, and it's better for a client to
 // reconnect when it can than to drop messages or back up a big
-// backlog of messages here or (worse) block waiting for the 
+// backlog of messages here or (worse) block waiting for the
 // channel or socket to have available space to write into.
 //
 // A dedicated goroutine is started for each client which feeds
@@ -269,7 +271,6 @@ func (c *MapClient) _send_event(extra_data []string, values []string) {
 	}
 }
 
-
 //
 // Send to all other clients (other than myself)
 //
@@ -324,19 +325,19 @@ func (c *MapClient) sendToClientChannel(data string) {
 	}
 
 	select {
-		case c.CommChannel <- data:
-			if DEBUGGING {
-				log.Printf("[client %s] chan<-%s", c.ClientAddr, data)
-			}
+	case c.CommChannel <- data:
+		if DEBUGGING {
+			log.Printf("[client %s] chan<-%s", c.ClientAddr, data)
+		}
 
-		default:
-			if time.Now().Unix() - c.LastPolo > ClientIdleTimeout {
-				log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
-				c.Close()
-			} else {
-				// queue this message up 
-				c.queueMessage(data)
-			}
+	default:
+		if time.Now().Unix()-c.LastPolo > ClientIdleTimeout {
+			log.Printf("[client %s] TERMINATING CONNECTION TO DEAD/PAINFULLY SLOW CLIENT", c.ClientAddr)
+			c.Close()
+		} else {
+			// queue this message up
+			c.queueMessage(data)
+		}
 	}
 }
 
@@ -366,13 +367,13 @@ func (c *MapClient) Close() {
 	// try to signal the background feeder that we're finished and it's
 	// safe to shut down the socket, if possible
 	select {
-		case c.CommChannel <- "■■■":
-			if DEBUGGING {
-				log.Printf("[client %s] Signaling client to stop", c.ClientAddr)
-			}
-		default:
-			log.Printf("[client %s] Unable to send stop signal to client channel; shutting down socket as last resort.", c.ClientAddr)
-			c.Connection.Close()
+	case c.CommChannel <- "■■■":
+		if DEBUGGING {
+			log.Printf("[client %s] Signaling client to stop", c.ClientAddr)
+		}
+	default:
+		log.Printf("[client %s] Unable to send stop signal to client channel; shutting down socket as last resort.", c.ClientAddr)
+		c.Connection.Close()
 	}
 }
 
@@ -384,7 +385,7 @@ func (c *MapClient) NextEvent() (*MapEvent, error) {
 	for c.Scanner.Scan() {
 		t := strings.TrimSpace(c.Scanner.Text())
 		if t == "" {
-			continue	// ignore blank input lines
+			continue // ignore blank input lines
 		}
 		new_event, err := NewMapEvent(t, "", "")
 		if err != nil {
@@ -427,7 +428,7 @@ func (c *MapClient) ConnResponse() {
 		if peer.WriteOnly {
 			wo = "1"
 		}
-		active_sec := fmt.Sprintf("%d", time_now - peer.LastPolo)
+		active_sec := fmt.Sprintf("%d", time_now-peer.LastPolo)
 
 		c.Send("CONN:", is, who, peer.ClientAddr, user, client, auth, "0", wo, active_sec)
 		ckval, err := PackageValues(is, who, peer.ClientAddr, user, client, auth, "0", wo, active_sec)
@@ -455,21 +456,21 @@ func (c *MapClient) backgroundSender() {
 FeedClient:
 	for {
 		select {
-			case message, more := <-c.CommChannel:
-				if !more || message == "■■■" {
-					log.Printf("[client %s] Disconnecting", c.ClientAddr)
-					c.Connection.Close()
-					c.ReachedEOF = true
-					break FeedClient
-				} else {
-					if DEBUGGING {
-						log.Printf("[client %s] tx: %s", c.ClientAddr, message)
-					}
-					c.Connection.Write([]byte(message + "\n"))
+		case message, more := <-c.CommChannel:
+			if !more || message == "■■■" {
+				log.Printf("[client %s] Disconnecting", c.ClientAddr)
+				c.Connection.Close()
+				c.ReachedEOF = true
+				break FeedClient
+			} else {
+				if DEBUGGING {
+					log.Printf("[client %s] tx: %s", c.ClientAddr, message)
 				}
-				if len(c.CommChannel) == 0 {
-					checkForBacklog = true
-				}
+				c.Connection.Write([]byte(message + "\n"))
+			}
+			if len(c.CommChannel) == 0 {
+				checkForBacklog = true
+			}
 		}
 
 		if checkForBacklog {
@@ -484,23 +485,23 @@ FeedClient:
 			c.lock.Lock()
 			if c.messageBacklogQueue != nil {
 				if len(c.messageBacklogQueue) > 0 {
-drainBacklog:
+				drainBacklog:
 					for {
 						select {
-							case c.CommChannel <- c.messageBacklogQueue[0]:
-								if DEBUGGING {
-									log.Printf("[client %s] unqueue %s", c.ClientAddr, c.messageBacklogQueue[0])
-								}
-								if len(c.messageBacklogQueue) > 1 {
-									c.messageBacklogQueue = c.messageBacklogQueue[1:]
-								} else {
-									c.messageBacklogQueue = nil
-									break drainBacklog
-								}
-
-							default:
-								// no more will fit, stop here
+						case c.CommChannel <- c.messageBacklogQueue[0]:
+							if DEBUGGING {
+								log.Printf("[client %s] unqueue %s", c.ClientAddr, c.messageBacklogQueue[0])
+							}
+							if len(c.messageBacklogQueue) > 1 {
+								c.messageBacklogQueue = c.messageBacklogQueue[1:]
+							} else {
+								c.messageBacklogQueue = nil
 								break drainBacklog
+							}
+
+						default:
+							// no more will fit, stop here
+							break drainBacklog
 						}
 					}
 				} else {
@@ -518,36 +519,36 @@ drainBacklog:
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//  __  __            ____                  _          
-// |  \/  | __ _ _ __/ ___|  ___ _ ____   _(_) ___ ___ 
+//  __  __            ____                  _
+// |  \/  | __ _ _ __/ ___|  ___ _ ____   _(_) ___ ___
 // | |\/| |/ _` | '_ \___ \ / _ \ '__\ \ / / |/ __/ _ \
 // | |  | | (_| | |_) |__) |  __/ |   \ V /| | (_|  __/
 // |_|  |_|\__,_| .__/____/ \___|_|    \_/ |_|\___\___|
-//              |_|                                    
+//              |_|
 //
 // MapService runs a single server instance. It encapsulates all of the
 // state and context of the service.
 //
 type MapService struct {
-    lock                sync.RWMutex            // controls concurrent access to this structure
-    AcceptIncoming      bool                    // server is accepting new connections
-    serverRunning       bool                    // if false, we're shutting down operations
-    outstandingClients  sync.WaitGroup          // atomic semaphore counting connected clients
-    IncomingListener    net.Listener            // incoming socket for new connections
-    Database            *sql.DB                 // database interface for persistent storage
-    PlayerGroupPass     []byte                  // authentication password shared amongst players
-    GmPass              []byte                  // authentication password for the GM
-    PersonalPasswords   map[string][]byte       // set of passwords for individual players
-    Clients             map[string]*MapClient   // dictionary of connected clients by client address
-    InitFile            string                  // name of initial greeting file
-    EventHistory        map[string]*MapEvent    // game state as mapping of key to event
-    ImageList           map[string]string       // dictionary of server locations for known images
-    ChatHistory         []*MapEvent             // history of messages sent to chat channel
-    IdByName            map[string]string       // dictionary of object IDs by creature name
-    ClassById           map[string]string       // dictionary of object classes by ID
-    PlayerDicePresets   map[string][]DicePreset // dictionary mapping username to personal die roll presets
-    SaveNeeded          bool                    // have we made changes to the game state since the last save?
-    StopChannel         chan int                // channel used to signal time for server to stop
+	lock               sync.RWMutex            // controls concurrent access to this structure
+	AcceptIncoming     bool                    // server is accepting new connections
+	serverRunning      bool                    // if false, we're shutting down operations
+	outstandingClients sync.WaitGroup          // atomic semaphore counting connected clients
+	IncomingListener   net.Listener            // incoming socket for new connections
+	Database           *sql.DB                 // database interface for persistent storage
+	PlayerGroupPass    []byte                  // authentication password shared amongst players
+	GmPass             []byte                  // authentication password for the GM
+	PersonalPasswords  map[string][]byte       // set of passwords for individual players
+	Clients            map[string]*MapClient   // dictionary of connected clients by client address
+	InitFile           string                  // name of initial greeting file
+	EventHistory       map[string]*MapEvent    // game state as mapping of key to event
+	ImageList          map[string]string       // dictionary of server locations for known images
+	ChatHistory        []*MapEvent             // history of messages sent to chat channel
+	IdByName           map[string]string       // dictionary of object IDs by creature name
+	ClassById          map[string]string       // dictionary of object classes by ID
+	PlayerDicePresets  map[string][]DicePreset // dictionary mapping username to personal die roll presets
+	SaveNeeded         bool                    // have we made changes to the game state since the last save?
+	StopChannel        chan int                // channel used to signal time for server to stop
 }
 
 //
@@ -556,7 +557,7 @@ type MapService struct {
 func (ms *MapService) AllClients() []*MapClient {
 	// This allows us to lock the global client list for as
 	// little time as possible, so a routine can then go off
-	// and use the list independently. 
+	// and use the list independently.
 	ms.lock.RLock()
 	clients := make([]*MapClient, len(ms.Clients))
 	i := 0
@@ -611,7 +612,7 @@ func (ms *MapService) Run() {
 			}
 			log.Printf("Error accepting incoming connection: %v", err)
 		} else {
-			go func () {
+			go func() {
 				ms.outstandingClients.Add(1)
 				defer ms.outstandingClients.Done()
 				ms.HandleClientConnection(client)
@@ -754,14 +755,14 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 		return
 	}
 
-	thisClient := MapClient {
+	thisClient := MapClient{
 		Connection:    clientConnection,
 		ClientAddr:    clientConnection.RemoteAddr().String(),
 		Scanner:       bufio.NewScanner(clientConnection),
 		Service:       ms,
 		Authenticated: false,
 		dice:          dieRoller,
-		LastPolo:	   time.Now().Unix(),
+		LastPolo:      time.Now().Unix(),
 		CommChannel:   make(chan string, CommChannelBufferSize),
 	}
 	log.Printf("Incoming connection from %s", thisClient.ClientAddr)
@@ -826,7 +827,7 @@ func (ms *MapService) HandleClientConnection(clientConnection net.Conn) {
 	} else {
 		// proceed without authentication (since this server is not configured
 		// to do authentication at all)
-		thisClient.Authenticated = true		// vacuously
+		thisClient.Authenticated = true // vacuously
 		thisClient.Send("OK", PROTOCOL_VERSION)
 		ms.NotifyPeerChange(thisClient.Username(), "joined")
 	}
@@ -910,781 +911,702 @@ func (ms *MapService) UpdateState(event *MapEvent) {
 //
 func (ms *MapService) ExecuteAction(event *MapEvent, thisClient *MapClient) {
 	switch event.EventType() {
-		// Effectively a no-op. Ignore completely.
-		case "MARCO":
+	// Effectively a no-op. Ignore completely.
+	case "MARCO":
+		return
+
+	// Also a no-op, but we're interested in how long it's been since
+	// we received an answer to our keep-alive pings, so we'll record
+	// this.
+	case "POLO":
+		thisClient.LastPolo = time.Now().Unix()
+		return
+
+	// Events not allowed to clients
+	case "AC", "CONN", "CONN:", "CONN.", "DENIED", "GRANTED", "ROLL", "OK", "PRIV":
+		thisClient.Send("//", "Clients not allowed to send this command", event.EventType())
+
+	// Events simply relayed to all other clients
+	case "//", "AI", "AI:", "AI.", "AV", "CLR@", "L", "M", "M?", "M@", "MARK":
+		thisClient.SendToOthers(event.Fields...)
+
+	// Events simply relayed, but restricted to GM only
+	case "CO", "CS", "DSM", "I", "IL", "TB":
+		if !thisClient.Authenticated || (thisClient.Auth != nil && !thisClient.Auth.GmMode) {
+			log.Printf("[client %s] DENIED privileged command %v to non-GM user", thisClient.ClientAddr, event.Fields)
+			thisClient.Send("PRIV", "You are not authorized to use the %v command", event.EventType())
 			return
+		}
+		thisClient.SendToOthers(event.Fields...)
 
-		// Also a no-op, but we're interested in how long it's been since
-		// we received an answer to our keep-alive pings, so we'll record
-		// this.
-		case "POLO":
-			thisClient.LastPolo = time.Now().Unix()
-			return
-
-		// Events not allowed to clients
-		case "AC", "CONN", "CONN:", "CONN.", "DENIED", "GRANTED", "ROLL", "OK", "PRIV":
-			thisClient.Send("//", "Clients not allowed to send this command", event.EventType())
-
-		// Events simply relayed to all other clients
-		case "//", "AI", "AI:", "AI.", "AV", "CLR@", "L", "M", "M?", "M@", "MARK":
-			thisClient.SendToOthers(event.Fields...)
-
-		// Events simply relayed, but restricted to GM only
-		case "CO", "CS", "DSM", "I", "IL", "TB":
-			if !thisClient.Authenticated || (thisClient.Auth != nil && !thisClient.Auth.GmMode) {
-				log.Printf("[client %s] DENIED privileged command %v to non-GM user", thisClient.ClientAddr, event.Fields)
-				thisClient.Send("PRIV", "You are not authorized to use the %v command", event.EventType())
-				return
-			}
-			thisClient.SendToOthers(event.Fields...)
-
-		// ACCEPT <message set>
-		//
-		// Restrict messages to this client to include only those in the set,
-		// unless <message set> is *, in which case accept all messages.
-		case "ACCEPT":
-			if event.Fields[1] == "*" {
-				thisClient.AcceptedList = nil
+	// ACCEPT <message set>
+	//
+	// Restrict messages to this client to include only those in the set,
+	// unless <message set> is *, in which case accept all messages.
+	case "ACCEPT":
+		if event.Fields[1] == "*" {
+			thisClient.AcceptedList = nil
+		} else {
+			allowed, err := ParseTclList(event.Fields[1])
+			if err != nil {
+				log.Printf("[client %s] Error understanding ACCEPT command: %v", thisClient.ClientAddr, err)
 			} else {
-				allowed, err := ParseTclList(event.Fields[1])
-				if err != nil {
-					log.Printf("[client %s] Error understanding ACCEPT command: %v", thisClient.ClientAddr, err)
-				} else {
-					thisClient.AcceptedList = allowed
-				}
+				thisClient.AcceptedList = allowed
 			}
-			log.Printf("[client %s] accepting %v", thisClient.ClientAddr, thisClient.AcceptedList)
+		}
+		log.Printf("[client %s] accepting %v", thisClient.ClientAddr, thisClient.AcceptedList)
 
-		// AI? <name> <size>
-		//
-		// Client requests definition of the given image by name and size.
-		// If we know, we'll send an AI@ event to answer the question directly.
-		// Otherwise, we'll forward on the question to the other clients to answer.
-		case "AI?":
-			ms.lock.RLock()
-			server_location, ok := ms.ImageList[event.Fields[1] + "‖" + event.Fields[2]]
-			ms.lock.RUnlock()
-			if ok {
-				thisClient.Send("AI@", event.Fields[1], event.Fields[2], server_location)
-			} else {
-				thisClient.SendToOthers(event.Fields...)
-			}
+	// AI? <name> <size>
+	//
+	// Client requests definition of the given image by name and size.
+	// If we know, we'll send an AI@ event to answer the question directly.
+	// Otherwise, we'll forward on the question to the other clients to answer.
+	case "AI?":
+		ms.lock.RLock()
+		server_location, ok := ms.ImageList[event.Fields[1]+"‖"+event.Fields[2]]
+		ms.lock.RUnlock()
+		if ok {
+			thisClient.Send("AI@", event.Fields[1], event.Fields[2], server_location)
+		} else {
+			thisClient.SendToOthers(event.Fields...)
+		}
 
-		// AI@ <name> <size> <server_id>
-		//
-		// Declare that the image with the given <name> and <size>
-		// may be found at the given <server_id>. If we receive this,
-		// we remember that location so we can use it to answer subsequent
-		// queries for that image.
-		case "AI@":
+	// AI@ <name> <size> <server_id>
+	//
+	// Declare that the image with the given <name> and <size>
+	// may be found at the given <server_id>. If we receive this,
+	// we remember that location so we can use it to answer subsequent
+	// queries for that image.
+	case "AI@":
+		ms.lock.Lock()
+		ms.ImageList[event.Fields[1]+"‖"+event.Fields[2]] = event.Fields[3]
+		ms.SaveNeeded = true
+		ms.lock.Unlock()
+		thisClient.SendToOthers(event.Fields...)
+
+	// AUTH <response> [<user> [<client>]]
+	// It's a bit late for this one to arrive now.
+	case "AUTH":
+		thisClient.Send("//", "AUTH command after authentication step ignored.")
+
+	// CC [*|<user> [<target> [<messageID>]]]
+	//
+	// Clear the chat history
+	//  <user> is the name of the user (if not "") who initiated this action
+	//  <target> is "" or (if >=0) the minimum message ID to remain after the clear,
+	//  or (if < 0) indicates that -<target> most recent messages should be kept.
+	//  <messageID> will be reassigned by the server here.
+	case "CC":
+		// fill out missing fields with default values
+		if len(event.Fields) < 2 {
+			event.Fields = append(event.Fields, "*")
+		}
+		if len(event.Fields) < 3 {
+			event.Fields = append(event.Fields, "")
+		}
+		if len(event.Fields) < 4 {
+			event.Fields = append(event.Fields, "0")
+		}
+
+		if event.Fields[2] == "" {
+			// delete entire history
 			ms.lock.Lock()
-			ms.ImageList[event.Fields[1] + "‖" + event.Fields[2]] = event.Fields[3]
+			ms.ChatHistory = nil
 			ms.SaveNeeded = true
 			ms.lock.Unlock()
-			thisClient.SendToOthers(event.Fields...)
-
-		// AUTH <response> [<user> [<client>]]
-		// It's a bit late for this one to arrive now.
-		case "AUTH":
-			thisClient.Send("//", "AUTH command after authentication step ignored.")
-
-		// CC [*|<user> [<target> [<messageID>]]]
-		//
-		// Clear the chat history
-		//  <user> is the name of the user (if not "") who initiated this action
-		//  <target> is "" or (if >=0) the minimum message ID to remain after the clear,
-		//  or (if < 0) indicates that -<target> most recent messages should be kept.
-		//  <messageID> will be reassigned by the server here.
-		case "CC":
-			// fill out missing fields with default values
-			if len(event.Fields) < 2 { event.Fields = append(event.Fields, "*") }
-			if len(event.Fields) < 3 { event.Fields = append(event.Fields, "")  }
-			if len(event.Fields) < 4 { event.Fields = append(event.Fields, "0") }
-
-			if event.Fields[2] == "" {
-				// delete entire history
+		} else {
+			target, err := strconv.Atoi(event.Fields[2])
+			if err != nil {
+				thisClient.Send("//", fmt.Sprintf("CC command rejected; invalid target: %v", err))
+				return
+			}
+			if target < 0 {
+				// delete all but last -target elements
 				ms.lock.Lock()
-				ms.ChatHistory = nil
-				ms.SaveNeeded = true
+				if len(ms.ChatHistory) > -target {
+					ms.ChatHistory = append([]*MapEvent(nil), ms.ChatHistory[len(ms.ChatHistory)+target:]...)
+					ms.SaveNeeded = true
+				}
 				ms.lock.Unlock()
 			} else {
-				target, err := strconv.Atoi(event.Fields[2])
-				if err != nil {
-					thisClient.Send("//", fmt.Sprintf("CC command rejected; invalid target: %v", err))
-					return
+				// delete all up to one with message ID target
+				ms.lock.Lock()
+				if len(ms.ChatHistory) > 0 {
+					n := sort.Search(len(ms.ChatHistory), func(i int) bool {
+						mid, err := ms.ChatHistory[i].MessageID()
+						if err != nil {
+							log.Printf("[client %s] CC: Error getting message ID from %v: %v", thisClient.ClientAddr, ms.ChatHistory[i], err)
+							return false
+						}
+						return mid >= target
+					})
+					ms.ChatHistory = append([]*MapEvent(nil), ms.ChatHistory[n:]...)
+					ms.SaveNeeded = true
 				}
-				if target < 0 {
-					// delete all but last -target elements
-					ms.lock.Lock()
-					if len(ms.ChatHistory) > -target {
-						ms.ChatHistory = append([]*MapEvent(nil), ms.ChatHistory[len(ms.ChatHistory)+target:]...)
-						ms.SaveNeeded = true
-					}
-					ms.lock.Unlock()
-				} else {
-					// delete all up to one with message ID target
-					ms.lock.Lock()
-					if len(ms.ChatHistory) > 0 {
-						n := sort.Search(len(ms.ChatHistory), func(i int) bool {
-							mid, err := ms.ChatHistory[i].MessageID()
-							if err != nil {
-								log.Printf("[client %s] CC: Error getting message ID from %v: %v", thisClient.ClientAddr, ms.ChatHistory[i], err)
-								return false
-							}
-							return mid >= target
-						})
-						ms.ChatHistory = append([]*MapEvent(nil), ms.ChatHistory[n:]...)
-						ms.SaveNeeded = true
-					}
-					ms.lock.Unlock()
-				}
+				ms.lock.Unlock()
 			}
+		}
+		ms.lock.Lock()
+		event.AssignMessageID()
+		ms.ChatHistory = append(ms.ChatHistory, event)
+		ms.SaveNeeded = true
+		ms.lock.Unlock()
+
+		// Now forward the CC command out to all our peers
+		thisClient.SendToOthers(event.Fields...)
+
+	// CLR <id>
+	//
+	// Delete all objects matching <id> from clients. <id> may be:
+	//	*						all objects
+	//  E*						all map elements
+	//	M*						all monsters
+	// 	P*						all players
+	//  [<imagename>=]<name>	creature with the given <name>
+	//  <id>					object with ID <id>
+	case "CLR":
+		switch event.Fields[1] {
+		case "*": // delete all objects
 			ms.lock.Lock()
-			event.AssignMessageID()
-			ms.ChatHistory = append(ms.ChatHistory, event)
+			ms.EventHistory = make(map[string]*MapEvent)
+			nextEventSequence = 0
+			ms.IdByName = make(map[string]string)
 			ms.SaveNeeded = true
 			ms.lock.Unlock()
 
-			// Now forward the CC command out to all our peers
-			thisClient.SendToOthers(event.Fields...)
-
-		// CLR <id>
-		//
-		// Delete all objects matching <id> from clients. <id> may be:
-		//	*						all objects
-		//  E*						all map elements
-		//	M*						all monsters
-		// 	P*						all players
-		//  [<imagename>=]<name>	creature with the given <name>
-		//  <id>					object with ID <id>
-		case "CLR":
-			switch event.Fields[1] {
-				case "*":	// delete all objects
-					ms.lock.Lock()
-					ms.EventHistory = make(map[string]*MapEvent)
-					nextEventSequence = 0
-					ms.IdByName = make(map[string]string)
-					ms.SaveNeeded = true
-					ms.lock.Unlock()
-
-				case "E*", "M*", "P*":	// delete tokens of the given type
-					ms.lock.Lock()
-					for key, ev := range ms.EventHistory {
-						if ev.EventClass() == event.Fields[1][0:1] {
-							delete(ms.EventHistory, key)
-						}
-					}
-					ms.lock.Unlock()
-
-				default: // delete creature token by name or any object by ID
-					creature_name := strip_creature_base_name(event.Fields[1])
-					ms.lock.RLock()
-					target, ok := ms.IdByName[creature_name]
-					ms.lock.RUnlock()
-					if !ok {
-						target = event.Fields[1]
-					}
-					ms.lock.Lock()
-					for key, ev := range ms.EventHistory {
-						if ev.ID == target {
-							delete(ms.EventHistory, key)
-						}
-					}
-					ms.lock.Unlock()
+		case "E*", "M*", "P*": // delete tokens of the given type
+			ms.lock.Lock()
+			for key, ev := range ms.EventHistory {
+				if ev.EventClass() == event.Fields[1][0:1] {
+					delete(ms.EventHistory, key)
+				}
 			}
+			ms.lock.Unlock()
 
-			// Now forward the CLR command out to all our peers
-			thisClient.SendToOthers(event.Fields...)
+		default: // delete creature token by name or any object by ID
+			creature_name := strip_creature_base_name(event.Fields[1])
+			ms.lock.RLock()
+			target, ok := ms.IdByName[creature_name]
+			ms.lock.RUnlock()
+			if !ok {
+				target = event.Fields[1]
+			}
+			ms.lock.Lock()
+			for key, ev := range ms.EventHistory {
+				if ev.ID == target {
+					delete(ms.EventHistory, key)
+				}
+			}
+			ms.lock.Unlock()
+		}
 
-		// D <recipients> <die-expression>
-		//
-		// Roll the dice described by <die-expression> and then transmit the
-		// result to the people in <recipients>. The latter may include
-		// the following special recipients:
-		//   @  send back to the client requesting this die-roll.
-		//   *  send to all connected clients
-		//   %  send privately to the GM, and ONLY the GM, regardless of any
-		//      other values in <recipients>.
-		//
-		case "D":
-			title, results, err := thisClient.dice.DoRoll(event.Fields[2])
-			if err != nil {
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+		// Now forward the CLR command out to all our peers
+		thisClient.SendToOthers(event.Fields...)
+
+	// D <recipients> <die-expression>
+	//
+	// Roll the dice described by <die-expression> and then transmit the
+	// result to the people in <recipients>. The latter may include
+	// the following special recipients:
+	//   @  send back to the client requesting this die-roll.
+	//   *  send to all connected clients
+	//   %  send privately to the GM, and ONLY the GM, regardless of any
+	//      other values in <recipients>.
+	//
+	case "D":
+		title, results, err := thisClient.dice.DoRoll(event.Fields[2])
+		if err != nil {
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
 				fmt.Sprintf("ERROR: die roll request not accepted: %v", err),
 				NextMessageID())
-				return
-			}
-			to_all := false
-			to_gm := false
-			to_list, err := ParseTclList(event.Fields[1])
-			if err != nil {
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+			return
+		}
+		to_all := false
+		to_gm := false
+		to_list, err := ParseTclList(event.Fields[1])
+		if err != nil {
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
 				fmt.Sprintf("ERROR: die roll recipient list not understood: %v", err),
 				NextMessageID())
-				return
+			return
+		}
+		for _, recipient := range to_list {
+			switch recipient {
+			case "*":
+				to_all = true
+			case "%":
+				to_gm = true
 			}
-			for _, recipient := range to_list {
-				switch recipient {
-					case "*":
-						to_all = true
-					case "%":
-						to_gm = true
-				}
-			}
+		}
 
-
-			for _, result := range results {
-				var details []string
-				for _, detail := range result.Details {
-					formatted_detail, err := ToTclString([]string{detail.Type, detail.Value})
-					if err != nil {
-						log.Printf("Internal error formatting ROLL response: %v", err)
-						return
-					}
-					details = append(details, formatted_detail)
-				}
-				formatted_detail_list, err := ToTclString(details)
+		for _, result := range results {
+			var details []string
+			for _, detail := range result.Details {
+				formatted_detail, err := ToTclString([]string{detail.Type, detail.Value})
 				if err != nil {
 					log.Printf("Internal error formatting ROLL response: %v", err)
 					return
 				}
+				details = append(details, formatted_detail)
+			}
+			formatted_detail_list, err := ToTclString(details)
+			if err != nil {
+				log.Printf("Internal error formatting ROLL response: %v", err)
+				return
+			}
+			//
+			// Create a chat channel event containing the die roll result
+			//
+			response_event, err := NewMapEventFromList("", []string{"ROLL", thisClient.Username(),
+				event.Fields[1], title, strconv.Itoa(result.Result), formatted_detail_list,
+				""}, "", "")
+			if err != nil {
+				log.Printf("Internal error creating ROLL event: %v", err)
+				return
+			}
+			//
+			// Add to the history of chat messages
+			//
+			ms.lock.Lock()
+			response_event.AssignMessageID()
+			ms.ChatHistory = append(ms.ChatHistory, response_event)
+			ms.SaveNeeded = true
+			ms.lock.Unlock()
+			//
+			// Send to recipients
+			//
+			if to_gm {
 				//
-				// Create a chat channel event containing the die roll result
+				// ONLY to the GM's client(s)
 				//
-				response_event, err := NewMapEventFromList("", []string{"ROLL", thisClient.Username(),
-					event.Fields[1], title, strconv.Itoa(result.Result), formatted_detail_list,
-					""}, "", "")
-				if err != nil {
-					log.Printf("Internal error creating ROLL event: %v", err)
-					return
-				}
-				//
-				// Add to the history of chat messages
-				//
-				ms.lock.Lock()
-				response_event.AssignMessageID()
-				ms.ChatHistory = append(ms.ChatHistory, response_event)
-				ms.SaveNeeded = true
-				ms.lock.Unlock()
-				//
-				// Send to recipients
-				//
-				if to_gm {
-					//
-					// ONLY to the GM's client(s)
-					//
-					for peerAddr, peer := range ms.Clients {
-						if !peer.WriteOnly && peer.Authenticated {
-							if peer.Username() == "GM" {
-								peer.Send(response_event.Fields...)
-							} else if peerAddr == thisClient.ClientAddr {
-								ack_event, err := NewMapEventFromList("", []string{"ROLL",
-									thisClient.Username(), event.Fields[1], title, "*",
-									"{comment {Results sent to GM}}", ""}, "", "")
-								if err != nil {
-									log.Printf("Internal error creating ROLL ack event: %v", err)
-									return
-								}
-								ms.lock.Lock()
-								ack_event.AssignMessageID()
-								ms.lock.Unlock()
-								thisClient.Send(ack_event.Fields...)
-							}
-						}
-					}
-				} else {
-					//
-					// Send results openly to all (listed) peers 
-					//
-					for peerAddr, peer := range ms.Clients {
-						if !peer.WriteOnly && peer.Authenticated {
-							if !to_all && peerAddr != thisClient.ClientAddr {
-								ok_to_send := false
-								for _, recipient := range to_list {
-									if peer.Username() == recipient {
-										ok_to_send = true
-										break
-									}
-								}
-								if !ok_to_send {
-									continue
-								}
-							}
+				for peerAddr, peer := range ms.Clients {
+					if !peer.WriteOnly && peer.Authenticated {
+						if peer.Username() == "GM" {
 							peer.Send(response_event.Fields...)
-						}
-					}
-				}
-			}
-
-		//
-		// DD <deflist>
-		//
-		// Define a personal set of die-roll presets. <deflist>
-		// is a list of presets, each of which is a 3-tuple:
-		//   <name> <description> <dice-spec>
-		//
-		case "DD":
-			if !thisClient.Authenticated || thisClient.Auth == nil {
-				log.Printf("[client %s] DD command failed: no username authenticated for user", thisClient.ClientAddr)
-				return
-			}
-			new_set, err := NewDicePresetListFromString(event.Fields[1])
-			if err != nil {
-				log.Printf("[client %s] DD command failed: %v; new set %s", thisClient.ClientAddr, err, event.Fields[1])
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset not understood: %v", err),
-					NextMessageID())
-				return
-			}
-			if ms.Database == nil {
-				log.Printf("[client %s] DD command failed (no open database)", thisClient.ClientAddr)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
-					NextMessageID())
-				return
-			}
-
-			err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
-			if err != nil {
-				log.Printf("[client %s] DD command failed to store: %v", thisClient.ClientAddr, err)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset could not be stored: %v", err),
-					NextMessageID())
-				return
-			}
-			ms.PlayerDicePresets[thisClient.Username()] = new_set
-			ms.SaveNeeded = true
-			ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
-
-		//
-		// DD+ <deflist>
-		//
-		// Add a new set of die-roll presets to the existing
-		// list for a user. 
-		//
-		case "DD+":
-			if !thisClient.Authenticated || thisClient.Auth == nil {
-				log.Printf("[client %s] DD+ command failed: no username authenticated for user", thisClient.ClientAddr)
-				return
-			}
-			if ms.Database == nil {
-				log.Printf("[client %s] DD+ command failed (no open database)", thisClient.ClientAddr)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
-					NextMessageID())
-				return
-			}
-			new_set, err := NewDicePresetListFromString(event.Fields[1])
-			if err != nil {
-				log.Printf("[client %s] DD+ command failed: %v; new set %s", thisClient.ClientAddr, err, event.Fields[1])
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset not understood: %v", err),
-					NextMessageID())
-				return
-			}
-			old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
-			if ok {
-				new_set = append(old_set, new_set...)
-			}
-			err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
-			if err != nil {
-				log.Printf("[client %s] DD+ command failed to store: %v", thisClient.ClientAddr, err)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset could not be stored: %v", err),
-					NextMessageID())
-				return
-			}
-			ms.PlayerDicePresets[thisClient.Username()] = new_set
-			ms.SaveNeeded = true
-			ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
-
-		//
-		// DD/ <regex>
-		//
-		// Remove all die-roll presets for the requesting user which match
-		// the given regular expression.
-		//
-		case "DD/":
-			if !thisClient.Authenticated || thisClient.Auth == nil {
-				log.Printf("[client %s] DD/ command failed: no username authenticated for user", thisClient.ClientAddr)
-				return
-			}
-			if ms.Database == nil {
-				log.Printf("[client %s] DD/ command failed (no open database)", thisClient.ClientAddr)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
-					NextMessageID())
-				return
-			}
-			old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
-			if !ok || len(old_set) == 0 {
-				return // nothing to do in this case
-			}
-			pattern, err := regexp.Compile(event.Fields[1])
-			if err != nil {
-				log.Printf("[client %s] DD/ command failed on regex compilation: %v", thisClient.ClientAddr, err)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll filter regex not understood: %v", err),
-					NextMessageID())
-				return
-			}
-
-			var new_set []DicePreset
-			for _, preset := range old_set {
-				if !pattern.MatchString(preset.Name) {
-					new_set = append(new_set, preset)
-				}
-			}
-
-			err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
-			if err != nil {
-				log.Printf("[client %s] DD/ command failed to store: %v", thisClient.ClientAddr, err)
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: die roll filter results could not be stored: %v", err),
-					NextMessageID())
-				return
-			}
-			ms.PlayerDicePresets[thisClient.Username()] = new_set
-			ms.SaveNeeded = true
-			ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
-
-		//
-		// DR
-		//
-		// Request die-roll presets on file for this user.
-		//
-		case "DR":
-			if !thisClient.Authenticated || thisClient.Auth == nil {
-				log.Printf("[client %s] DR command failed: no username authenticated for user", thisClient.ClientAddr)
-				return
-			}
-
-			old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
-			if !ok || len(old_set) == 0 {
-				thisClient.Send("DD=")
-				thisClient.Send("DD.", "0", "")
-				return
-			}
-
-			ms.SendMyPresets(thisClient, thisClient.Username())
-
-		//
-		// LS
-		// LS: <data>
-		// LS. <count> <checksum>
-		//
-		// Load a data set (as if from a .map data file) describing all attributes
-		// of a set of map elements and creature token.  Even though they are sent
-		// as multiple commands over the client/server connections, we will store
-		// them here as a single event with multiple lines in the raw portion and an
-		// empty Fields list.
-		//
-		case "LS":
-			if thisClient.IncomingData != nil {
-				log.Printf("[client %s] WARNING: LS command received before previous one completed!", thisClient.ClientAddr)
-				log.Printf("[client %s] WARNING: Abandoning %d element%s previously received!",
-					thisClient.ClientAddr, len(thisClient.IncomingData),
-					plural(len(thisClient.IncomingData)))
-				thisClient.IncomingData = nil
-			}
-			thisClient.IncomingDataType = "LS"
-			return // don't save this (incomplete) operation in the state history
-
-		case "LS:":
-			if thisClient.IncomingDataType == "" {
-				log.Printf("[client %s] WARNING: LS: command received before LS command (ignored)", thisClient.ClientAddr)
-				return
-			}
-			if thisClient.IncomingDataType != "LS" {
-				log.Printf("[client %s] WARNING: LS: command received during %s command set (ignored)", thisClient.ClientAddr, thisClient.IncomingDataType)
-				return
-			}
-			saved_data := event.Fields[1]
-			thisClient.IncomingData = append(thisClient.IncomingData, saved_data)
-			return // don't save this (incomplete) operation in the state history
-
-		case "LS.":
-			if thisClient.IncomingDataType == "" {
-				log.Printf("[client %s] WARNING: LS. command received before LS command (ignored)", thisClient.ClientAddr)
-				return
-			}
-			if thisClient.IncomingDataType != "LS" {
-				log.Printf("[client %s] WARNING: LS. command received during %s command sequence (ignored)", thisClient.ClientAddr, thisClient.IncomingDataType)
-				return
-			}
-			data_by_id := make(map[string][]string)
-			expected_count, err := strconv.Atoi(event.Fields[1])
-			if err != nil {
-				log.Printf("[client %s] ERROR: LS. command count value couldn't be parsed: %v (LS sequence not accepted)", thisClient.ClientAddr, err)
-				goto reject_LS
-			}
-			if len(thisClient.IncomingData) != expected_count {
-				log.Printf("[client %s] ERROR: LS. command count value %d doesn't match expected count %d (LS sequence not accepted)", thisClient.ClientAddr, len(thisClient.IncomingData), expected_count)
-				goto reject_LS
-			}
-
-
-			if len(event.Fields) < 3 || event.Fields[2] == "" {
-				log.Printf("[client %s] WARNING: LS. command without checksum (won't validate)", thisClient.ClientAddr)
-			} else {
-				expected_checksum, err := base64.StdEncoding.DecodeString(event.Fields[2])
-				if err != nil {
-					log.Printf("[client %s] WARNING: LS. command checksum value couldn't be parsed: %v (LS sequence not accepted)", thisClient.ClientAddr, err)
-					goto reject_LS
-				}
-				cksum := sha256.New()
-				for _, x := range thisClient.IncomingData {
-					log.Printf("[client %s] adding \"%s\" to checksum", thisClient.ClientAddr, x)
-					cksum.Write([]byte(x))
-				}
-				if !bytesEqual(expected_checksum, cksum.Sum(nil)) {
-					log.Printf("[client %s] ERROR: LS. command checksum mismatch (LS sequence not accepted)", thisClient.ClientAddr)
-					log.Printf("[client %s] calculated: %v", thisClient.ClientAddr, cksum.Sum(nil))
-					log.Printf("[client %s] expected:   %v", thisClient.ClientAddr, expected_checksum)
-					goto reject_LS
-				}
-			}
-			//
-			// run through the list of objects sent in the LS command,
-			// rearranging them from the random order they're allowed to arrive
-			// per the protocol spec into a new set of events that each describe
-			// a single object.
-			//
-
-			thisClient.SendToOthers("LS")
-			for _, item_text := range thisClient.IncomingData {
-				item, err := ParseTclList(item_text)
-				if err != nil {
-					log.Printf("[client %s] ERROR: LS object format error in %s: %v; sequence rejected", thisClient.ClientAddr, item_text, err)
-					goto reject_LS
-				}
-
-				if len(item) == 0 {
-					continue
-				}
-				if len(item) < 2 {
-					log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item_text)
-					goto reject_LS
-				}
-				thisClient.SendToOthers("LS:", item_text)
-				switch item[0] {
-					case "M", "P":
-						attrs := strings.SplitN(item[1], ":", 2)
-						if len(attrs) != 2 {
-							log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item[1])
-							goto reject_LS
-						}
-						obj_list, ok := data_by_id[attrs[1]]
-						if !ok {
-							obj_list = []string{item_text}
-						} else {
-							obj_list = append(obj_list, item_text)
-						}
-						data_by_id[attrs[1]] = obj_list
-						ms.lock.Lock()
-						ms.ClassById[attrs[1]] = item[0]
-						ms.SaveNeeded = true
-						ms.lock.Unlock()
-						if attrs[0] == "NAME" {
-							if len(item) < 3 {
-								log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item_text)
-								goto reject_LS
+						} else if peerAddr == thisClient.ClientAddr {
+							ack_event, err := NewMapEventFromList("", []string{"ROLL",
+								thisClient.Username(), event.Fields[1], title, "*",
+								"{comment {Results sent to GM}}", ""}, "", "")
+							if err != nil {
+								log.Printf("Internal error creating ROLL ack event: %v", err)
+								return
 							}
 							ms.lock.Lock()
-							ms.IdByName[strip_creature_base_name(item[2])] = attrs[1]
-							ms.SaveNeeded = true
+							ack_event.AssignMessageID()
 							ms.lock.Unlock()
+							thisClient.Send(ack_event.Fields...)
 						}
-					case "F":
-						data_by_id[item[1]] = []string{item_text}
-						ms.lock.Lock()
-						ms.ClassById[item[1]] = ""
-						ms.SaveNeeded = true
-						ms.lock.Unlock()
-
-					default:
-						attrs := strings.SplitN(item[0], ":", 2)
-						if len(attrs) != 2 {
-							log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item[0])
-							goto reject_LS
-						}
-						old_list, ok := data_by_id[attrs[1]]
-						if !ok {
-							old_list = []string{item_text}
-						} else {
-							old_list = append(old_list, item_text)
-						}
-						data_by_id[attrs[1]] = old_list
-						ms.lock.Lock()
-						ms.ClassById[attrs[1]] = "E"
-						ms.SaveNeeded = true
-						ms.lock.Unlock()
-				}
-			}
-			thisClient.SendToOthers(event.Fields...)
-			//
-			// repackage by object
-			//
-			for obj_id, definition := range data_by_id {
-				cksum := sha256.New()
-				var elements []string
-				for _, element := range definition {
-					cksum.Write([]byte(element))
-					elements = append(elements, "LS: {" + element + "}")
-				}
-				elements = append(elements, fmt.Sprintf("LS. %d %s",
-					len(elements), base64.StdEncoding.EncodeToString(cksum.Sum(nil))))
-				ms.lock.RLock()
-				obj_class, ok := ms.ClassById[obj_id]
-				ms.lock.RUnlock()
-				if !ok {
-					obj_class = ""
-				}
-				new_event, err := NewMapEvent("LS", obj_id, obj_class)
-				if err != nil {
-					log.Printf("[client %s] ERROR packaging LS data for object %s: %v",
-						thisClient.ClientAddr, obj_id, err)
-					return
-				}
-				new_event.MultiRawData = elements
-				ms.UpdateState(new_event)
-			}
-
-reject_LS:
-			thisClient.IncomingDataType = ""
-			thisClient.IncomingData = nil
-			return // don't save the original event to our history (we already saved the repackaged ones)
-
-		//
-		// NO
-		// NO+
-		// 
-		// Set client to write-only mode. NO+ is an obsolete variation
-		// of this command which we will now treat as a synonym for NO.
-		//
-		case "NO", "NO+":
-			thisClient.WriteOnly = true
-
-		//
-		// OA <id> <kvlist>
-		//
-		// Update a set of arbitrary attributes for the given object
-		// by <id> (which may be the unique identifier for any object
-		// (i.e., a UUID), or "@<name>" for a named creature token).
-		//
-		// <kvlist> is a list with an even number of elements, alternating
-		// between the name of an object attribute and its new value.
-		//
-		case "OA":
-			target := ""
-			name := ""
-			if event.Fields[1] == "" || event.Fields[1] == "@" {
-				log.Printf("[client %s] OA command rejected (empty ID field)", thisClient.ClientAddr)
-				return
-			}
-			kvlist, err := ParseTclList(event.Fields[2])
-			if err != nil {
-				log.Printf("[client %s] OA command: cannot parse kvlist: %v",
-					thisClient.ClientAddr, err)
-				return
-			}
-			if len(kvlist) % 2 != 0 {
-				log.Printf("[client %s] OA command: kvlist has non-even number of elements: %d",
-					thisClient.ClientAddr, len(kvlist))
-				return
-			}
-
-			if event.Fields[1][0:1] == "@" {
-				var ok bool
-
-				name = strip_creature_base_name(event.Fields[1][1:])
-				ms.lock.RLock()
-				target, ok = ms.IdByName[name]
-				ms.lock.RUnlock()
-				if ok {
-					ms.lock.RLock()
-					known_class, ok := ms.ClassById[target]
-					ms.lock.RUnlock()
-					if ok {
-						event.Class = known_class
 					}
-					event.ID = target
-				} else {
-					target = ""
-					event.ID = ""
-					log.Printf("[client %s] OA command: setting attribute for %s: unknown object name (attempting best try)", thisClient.ClientAddr, event.Fields[1])
 				}
 			} else {
-				target = event.Fields[1]
-				ms.lock.RLock()
-				known_class, ok := ms.ClassById[target]
-				ms.lock.RUnlock()
-				if ok {
-					event.Class = known_class
-				}
-				event.ID = target
-			}
-
-			// if we're changing the object's NAME attribute, we'll have to
-			// change the mapping of name to ID now.
-			for i := 0; i < len(kvlist)-1; i+= 2 {
-				if kvlist[i] == "NAME" {
-					ms.lock.Lock()
-					if target != "" {
-						if name != "" {
-							_, ok := ms.IdByName[name]
-							if ok {
-								delete(ms.IdByName, name)
+				//
+				// Send results openly to all (listed) peers
+				//
+				for peerAddr, peer := range ms.Clients {
+					if !peer.WriteOnly && peer.Authenticated {
+						if !to_all && peerAddr != thisClient.ClientAddr {
+							ok_to_send := false
+							for _, recipient := range to_list {
+								if peer.Username() == recipient {
+									ok_to_send = true
+									break
+								}
+							}
+							if !ok_to_send {
+								continue
 							}
 						}
-						ms.IdByName[kvlist[i+1]] = target
+						peer.Send(response_event.Fields...)
 					}
+				}
+			}
+		}
+
+	//
+	// DD <deflist>
+	//
+	// Define a personal set of die-roll presets. <deflist>
+	// is a list of presets, each of which is a 3-tuple:
+	//   <name> <description> <dice-spec>
+	//
+	case "DD":
+		if !thisClient.Authenticated || thisClient.Auth == nil {
+			log.Printf("[client %s] DD command failed: no username authenticated for user", thisClient.ClientAddr)
+			return
+		}
+		new_set, err := NewDicePresetListFromString(event.Fields[1])
+		if err != nil {
+			log.Printf("[client %s] DD command failed: %v; new set %s", thisClient.ClientAddr, err, event.Fields[1])
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset not understood: %v", err),
+				NextMessageID())
+			return
+		}
+		if ms.Database == nil {
+			log.Printf("[client %s] DD command failed (no open database)", thisClient.ClientAddr)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+				NextMessageID())
+			return
+		}
+
+		err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
+		if err != nil {
+			log.Printf("[client %s] DD command failed to store: %v", thisClient.ClientAddr, err)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset could not be stored: %v", err),
+				NextMessageID())
+			return
+		}
+		ms.PlayerDicePresets[thisClient.Username()] = new_set
+		ms.SaveNeeded = true
+		ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
+
+	//
+	// DD+ <deflist>
+	//
+	// Add a new set of die-roll presets to the existing
+	// list for a user.
+	//
+	case "DD+":
+		if !thisClient.Authenticated || thisClient.Auth == nil {
+			log.Printf("[client %s] DD+ command failed: no username authenticated for user", thisClient.ClientAddr)
+			return
+		}
+		if ms.Database == nil {
+			log.Printf("[client %s] DD+ command failed (no open database)", thisClient.ClientAddr)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+				NextMessageID())
+			return
+		}
+		new_set, err := NewDicePresetListFromString(event.Fields[1])
+		if err != nil {
+			log.Printf("[client %s] DD+ command failed: %v; new set %s", thisClient.ClientAddr, err, event.Fields[1])
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset not understood: %v", err),
+				NextMessageID())
+			return
+		}
+		old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
+		if ok {
+			new_set = append(old_set, new_set...)
+		}
+		err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
+		if err != nil {
+			log.Printf("[client %s] DD+ command failed to store: %v", thisClient.ClientAddr, err)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset could not be stored: %v", err),
+				NextMessageID())
+			return
+		}
+		ms.PlayerDicePresets[thisClient.Username()] = new_set
+		ms.SaveNeeded = true
+		ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
+
+	//
+	// DD/ <regex>
+	//
+	// Remove all die-roll presets for the requesting user which match
+	// the given regular expression.
+	//
+	case "DD/":
+		if !thisClient.Authenticated || thisClient.Auth == nil {
+			log.Printf("[client %s] DD/ command failed: no username authenticated for user", thisClient.ClientAddr)
+			return
+		}
+		if ms.Database == nil {
+			log.Printf("[client %s] DD/ command failed (no open database)", thisClient.ClientAddr)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll preset could not be stored: the system administrator has not configured persistent storage."),
+				NextMessageID())
+			return
+		}
+		old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
+		if !ok || len(old_set) == 0 {
+			return // nothing to do in this case
+		}
+		pattern, err := regexp.Compile(event.Fields[1])
+		if err != nil {
+			log.Printf("[client %s] DD/ command failed on regex compilation: %v", thisClient.ClientAddr, err)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll filter regex not understood: %v", err),
+				NextMessageID())
+			return
+		}
+
+		var new_set []DicePreset
+		for _, preset := range old_set {
+			if !pattern.MatchString(preset.Name) {
+				new_set = append(new_set, preset)
+			}
+		}
+
+		err = UpdateDicePresets(ms.Database, thisClient.Username(), new_set)
+		if err != nil {
+			log.Printf("[client %s] DD/ command failed to store: %v", thisClient.ClientAddr, err)
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: die roll filter results could not be stored: %v", err),
+				NextMessageID())
+			return
+		}
+		ms.PlayerDicePresets[thisClient.Username()] = new_set
+		ms.SaveNeeded = true
+		ms.SendDicePresetsToOtherClients(thisClient, thisClient.Username())
+
+	//
+	// DR
+	//
+	// Request die-roll presets on file for this user.
+	//
+	case "DR":
+		if !thisClient.Authenticated || thisClient.Auth == nil {
+			log.Printf("[client %s] DR command failed: no username authenticated for user", thisClient.ClientAddr)
+			return
+		}
+
+		old_set, ok := ms.PlayerDicePresets[thisClient.Username()]
+		if !ok || len(old_set) == 0 {
+			thisClient.Send("DD=")
+			thisClient.Send("DD.", "0", "")
+			return
+		}
+
+		ms.SendMyPresets(thisClient, thisClient.Username())
+
+	//
+	// LS
+	// LS: <data>
+	// LS. <count> <checksum>
+	//
+	// Load a data set (as if from a .map data file) describing all attributes
+	// of a set of map elements and creature token.  Even though they are sent
+	// as multiple commands over the client/server connections, we will store
+	// them here as a single event with multiple lines in the raw portion and an
+	// empty Fields list.
+	//
+	case "LS":
+		if thisClient.IncomingData != nil {
+			log.Printf("[client %s] WARNING: LS command received before previous one completed!", thisClient.ClientAddr)
+			log.Printf("[client %s] WARNING: Abandoning %d element%s previously received!",
+				thisClient.ClientAddr, len(thisClient.IncomingData),
+				plural(len(thisClient.IncomingData)))
+			thisClient.IncomingData = nil
+		}
+		thisClient.IncomingDataType = "LS"
+		return // don't save this (incomplete) operation in the state history
+
+	case "LS:":
+		if thisClient.IncomingDataType == "" {
+			log.Printf("[client %s] WARNING: LS: command received before LS command (ignored)", thisClient.ClientAddr)
+			return
+		}
+		if thisClient.IncomingDataType != "LS" {
+			log.Printf("[client %s] WARNING: LS: command received during %s command set (ignored)", thisClient.ClientAddr, thisClient.IncomingDataType)
+			return
+		}
+		saved_data := event.Fields[1]
+		thisClient.IncomingData = append(thisClient.IncomingData, saved_data)
+		return // don't save this (incomplete) operation in the state history
+
+	case "LS.":
+		if thisClient.IncomingDataType == "" {
+			log.Printf("[client %s] WARNING: LS. command received before LS command (ignored)", thisClient.ClientAddr)
+			return
+		}
+		if thisClient.IncomingDataType != "LS" {
+			log.Printf("[client %s] WARNING: LS. command received during %s command sequence (ignored)", thisClient.ClientAddr, thisClient.IncomingDataType)
+			return
+		}
+		data_by_id := make(map[string][]string)
+		expected_count, err := strconv.Atoi(event.Fields[1])
+		if err != nil {
+			log.Printf("[client %s] ERROR: LS. command count value couldn't be parsed: %v (LS sequence not accepted)", thisClient.ClientAddr, err)
+			goto reject_LS
+		}
+		if len(thisClient.IncomingData) != expected_count {
+			log.Printf("[client %s] ERROR: LS. command count value %d doesn't match expected count %d (LS sequence not accepted)", thisClient.ClientAddr, len(thisClient.IncomingData), expected_count)
+			goto reject_LS
+		}
+
+		if len(event.Fields) < 3 || event.Fields[2] == "" {
+			log.Printf("[client %s] WARNING: LS. command without checksum (won't validate)", thisClient.ClientAddr)
+		} else {
+			expected_checksum, err := base64.StdEncoding.DecodeString(event.Fields[2])
+			if err != nil {
+				log.Printf("[client %s] WARNING: LS. command checksum value couldn't be parsed: %v (LS sequence not accepted)", thisClient.ClientAddr, err)
+				goto reject_LS
+			}
+			cksum := sha256.New()
+			for _, x := range thisClient.IncomingData {
+				log.Printf("[client %s] adding \"%s\" to checksum", thisClient.ClientAddr, x)
+				cksum.Write([]byte(x))
+			}
+			if !bytesEqual(expected_checksum, cksum.Sum(nil)) {
+				log.Printf("[client %s] ERROR: LS. command checksum mismatch (LS sequence not accepted)", thisClient.ClientAddr)
+				log.Printf("[client %s] calculated: %v", thisClient.ClientAddr, cksum.Sum(nil))
+				log.Printf("[client %s] expected:   %v", thisClient.ClientAddr, expected_checksum)
+				goto reject_LS
+			}
+		}
+		//
+		// run through the list of objects sent in the LS command,
+		// rearranging them from the random order they're allowed to arrive
+		// per the protocol spec into a new set of events that each describe
+		// a single object.
+		//
+
+		thisClient.SendToOthers("LS")
+		for _, item_text := range thisClient.IncomingData {
+			item, err := ParseTclList(item_text)
+			if err != nil {
+				log.Printf("[client %s] ERROR: LS object format error in %s: %v; sequence rejected", thisClient.ClientAddr, item_text, err)
+				goto reject_LS
+			}
+
+			if len(item) == 0 {
+				continue
+			}
+			if len(item) < 2 {
+				log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item_text)
+				goto reject_LS
+			}
+			thisClient.SendToOthers("LS:", item_text)
+			switch item[0] {
+			case "M", "P":
+				attrs := strings.SplitN(item[1], ":", 2)
+				if len(attrs) != 2 {
+					log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item[1])
+					goto reject_LS
+				}
+				obj_list, ok := data_by_id[attrs[1]]
+				if !ok {
+					obj_list = []string{item_text}
+				} else {
+					obj_list = append(obj_list, item_text)
+				}
+				data_by_id[attrs[1]] = obj_list
+				ms.lock.Lock()
+				ms.ClassById[attrs[1]] = item[0]
+				ms.SaveNeeded = true
+				ms.lock.Unlock()
+				if attrs[0] == "NAME" {
+					if len(item) < 3 {
+						log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item_text)
+						goto reject_LS
+					}
+					ms.lock.Lock()
+					ms.IdByName[strip_creature_base_name(item[2])] = attrs[1]
 					ms.SaveNeeded = true
 					ms.lock.Unlock()
-					break
 				}
-			}
-			thisClient.SendToOthers(event.Fields...)
+			case "F":
+				data_by_id[item[1]] = []string{item_text}
+				ms.lock.Lock()
+				ms.ClassById[item[1]] = ""
+				ms.SaveNeeded = true
+				ms.lock.Unlock()
 
+			default:
+				attrs := strings.SplitN(item[0], ":", 2)
+				if len(attrs) != 2 {
+					log.Printf("[client %s] ERROR: LS object format error in %s; sequence rejected", thisClient.ClientAddr, item[0])
+					goto reject_LS
+				}
+				old_list, ok := data_by_id[attrs[1]]
+				if !ok {
+					old_list = []string{item_text}
+				} else {
+					old_list = append(old_list, item_text)
+				}
+				data_by_id[attrs[1]] = old_list
+				ms.lock.Lock()
+				ms.ClassById[attrs[1]] = "E"
+				ms.SaveNeeded = true
+				ms.lock.Unlock()
+			}
+		}
+		thisClient.SendToOthers(event.Fields...)
 		//
-		// OA+ <id> <key> <valuelist>
-		// OA- <id> <key> <valuelist>
+		// repackage by object
 		//
-		// Assuming that the object with the given <id> has an attribute
-		// <key> whose value is a list of values, add (OA+) or remove (OA-) the
-		// list of values to/from that attribute.
-		//
-		case "OA+", "OA-":
-			target := ""
-			name := ""
-			if event.Fields[1] == "" || event.Fields[1] == "@" {
-				log.Printf("[client %s] %s command rejected (empty ID field)",
-					thisClient.ClientAddr, event.EventType())
+		for obj_id, definition := range data_by_id {
+			cksum := sha256.New()
+			var elements []string
+			for _, element := range definition {
+				cksum.Write([]byte(element))
+				elements = append(elements, "LS: {"+element+"}")
+			}
+			elements = append(elements, fmt.Sprintf("LS. %d %s",
+				len(elements), base64.StdEncoding.EncodeToString(cksum.Sum(nil))))
+			ms.lock.RLock()
+			obj_class, ok := ms.ClassById[obj_id]
+			ms.lock.RUnlock()
+			if !ok {
+				obj_class = ""
+			}
+			new_event, err := NewMapEvent("LS", obj_id, obj_class)
+			if err != nil {
+				log.Printf("[client %s] ERROR packaging LS data for object %s: %v",
+					thisClient.ClientAddr, obj_id, err)
 				return
 			}
+			new_event.MultiRawData = elements
+			ms.UpdateState(new_event)
+		}
 
-			if event.Fields[1][0:1] == "@" {
-				var ok bool
-				name = strip_creature_base_name(event.Fields[1][1:])
-				ms.lock.RLock()
-				target, ok = ms.IdByName[name]
-				ms.lock.RUnlock()
-				if ok {
-					ms.lock.RLock()
-					known_class, ok := ms.ClassById[target]
-					ms.lock.RUnlock()
-					if ok {
-						event.Class = known_class
-					}
-					event.ID = target
-				} else {
-					target = ""
-					event.ID = ""
-					log.Printf("[client %s] %s command: setting attribute for %s: unknown object name (attempting best try)",
-						thisClient.ClientAddr, event.EventType(), event.Fields[1])
-				}
-			} else {
-				target = event.Fields[1]
+	reject_LS:
+		thisClient.IncomingDataType = ""
+		thisClient.IncomingData = nil
+		return // don't save the original event to our history (we already saved the repackaged ones)
+
+	//
+	// NO
+	// NO+
+	//
+	// Set client to write-only mode. NO+ is an obsolete variation
+	// of this command which we will now treat as a synonym for NO.
+	//
+	case "NO", "NO+":
+		thisClient.WriteOnly = true
+
+	//
+	// OA <id> <kvlist>
+	//
+	// Update a set of arbitrary attributes for the given object
+	// by <id> (which may be the unique identifier for any object
+	// (i.e., a UUID), or "@<name>" for a named creature token).
+	//
+	// <kvlist> is a list with an even number of elements, alternating
+	// between the name of an object attribute and its new value.
+	//
+	case "OA":
+		target := ""
+		name := ""
+		if event.Fields[1] == "" || event.Fields[1] == "@" {
+			log.Printf("[client %s] OA command rejected (empty ID field)", thisClient.ClientAddr)
+			return
+		}
+		kvlist, err := ParseTclList(event.Fields[2])
+		if err != nil {
+			log.Printf("[client %s] OA command: cannot parse kvlist: %v",
+				thisClient.ClientAddr, err)
+			return
+		}
+		if len(kvlist)%2 != 0 {
+			log.Printf("[client %s] OA command: kvlist has non-even number of elements: %d",
+				thisClient.ClientAddr, len(kvlist))
+			return
+		}
+
+		if event.Fields[1][0:1] == "@" {
+			var ok bool
+
+			name = strip_creature_base_name(event.Fields[1][1:])
+			ms.lock.RLock()
+			target, ok = ms.IdByName[name]
+			ms.lock.RUnlock()
+			if ok {
 				ms.lock.RLock()
 				known_class, ok := ms.ClassById[target]
 				ms.lock.RUnlock()
@@ -1692,152 +1614,237 @@ reject_LS:
 					event.Class = known_class
 				}
 				event.ID = target
-			}
-			log.Printf("%v", target)
-			thisClient.SendToOthers(event.Fields...)
-
-		//
-		// PS <id> <color> <name> <area> <size> player|monster <x> <y> <reach>
-		//
-		// Place someone (a creature token) on the map.
-		//
-		case "PS":
-			ms.lock.Lock()
-			ms.IdByName[event.Fields[3]] = event.Fields[1]
-			ms.SaveNeeded = true
-			ms.lock.Unlock()
-			thisClient.SendToOthers(event.Fields...)
-
-		//
-		// SYNC [CHAT [<target>]]
-		//
-		// Synchronize the client with the current game state by replaying
-		// all of the saved events we've been tracking.
-		//
-		// In the case of SYNC CHAT, rather than replaying the events, we replay
-		// the saved chat messages. If <target> is supplied, only the messages
-		// with IDs greater than <target> are sent. If <target> is negative, then
-		// only the most recent |<target>| messages are sent.
-		//
-		// The events are stored in EventHistory as a map of key->*MapEvent
-		// (and ChatHistory for chat events as a linear slice of *MapEvent)
-		// 
-		// The ChatHistory list is stored in ascending message ID order so we 
-		// can simply re-transmit its events by finding our starting point
-		// and going from there. However, the EventHistory map needs to be
-		// sorted first. We store it by key to make updates more efficient
-		// since the more expensive sorting operation only needs to be 
-		// performed on the relatively rare SYNC command.
-		//
-		case "SYNC":
-			if len(event.Fields) == 1 {
-				// SYNC
-				// Send the stored events in our history
-				//
-				ms.Sync(thisClient)
 			} else {
-				if event.Fields[1] == "CHAT" {
-					// SYNC CHAT [target]
-					ms.lock.RLock()
-					start := 0
-					if len(event.Fields) > 2 {
-						target, err := strconv.Atoi(event.Fields[2])
-						if err != nil {
-							ms.lock.RUnlock()
-							log.Printf("[client %s] SYNC CHAT target value not understood: %v", thisClient.ClientAddr, err)
-							return
+				target = ""
+				event.ID = ""
+				log.Printf("[client %s] OA command: setting attribute for %s: unknown object name (attempting best try)", thisClient.ClientAddr, event.Fields[1])
+			}
+		} else {
+			target = event.Fields[1]
+			ms.lock.RLock()
+			known_class, ok := ms.ClassById[target]
+			ms.lock.RUnlock()
+			if ok {
+				event.Class = known_class
+			}
+			event.ID = target
+		}
+
+		// if we're changing the object's NAME attribute, we'll have to
+		// change the mapping of name to ID now.
+		for i := 0; i < len(kvlist)-1; i += 2 {
+			if kvlist[i] == "NAME" {
+				ms.lock.Lock()
+				if target != "" {
+					if name != "" {
+						_, ok := ms.IdByName[name]
+						if ok {
+							delete(ms.IdByName, name)
 						}
-						if target < 0 {
-							// send the most recent |target| messages
-							start = len(ms.ChatHistory) + target
-							if start < 0 {
-								start = 0
+					}
+					ms.IdByName[kvlist[i+1]] = target
+				}
+				ms.SaveNeeded = true
+				ms.lock.Unlock()
+				break
+			}
+		}
+		thisClient.SendToOthers(event.Fields...)
+
+	//
+	// OA+ <id> <key> <valuelist>
+	// OA- <id> <key> <valuelist>
+	//
+	// Assuming that the object with the given <id> has an attribute
+	// <key> whose value is a list of values, add (OA+) or remove (OA-) the
+	// list of values to/from that attribute.
+	//
+	case "OA+", "OA-":
+		target := ""
+		name := ""
+		if event.Fields[1] == "" || event.Fields[1] == "@" {
+			log.Printf("[client %s] %s command rejected (empty ID field)",
+				thisClient.ClientAddr, event.EventType())
+			return
+		}
+
+		if event.Fields[1][0:1] == "@" {
+			var ok bool
+			name = strip_creature_base_name(event.Fields[1][1:])
+			ms.lock.RLock()
+			target, ok = ms.IdByName[name]
+			ms.lock.RUnlock()
+			if ok {
+				ms.lock.RLock()
+				known_class, ok := ms.ClassById[target]
+				ms.lock.RUnlock()
+				if ok {
+					event.Class = known_class
+				}
+				event.ID = target
+			} else {
+				target = ""
+				event.ID = ""
+				log.Printf("[client %s] %s command: setting attribute for %s: unknown object name (attempting best try)",
+					thisClient.ClientAddr, event.EventType(), event.Fields[1])
+			}
+		} else {
+			target = event.Fields[1]
+			ms.lock.RLock()
+			known_class, ok := ms.ClassById[target]
+			ms.lock.RUnlock()
+			if ok {
+				event.Class = known_class
+			}
+			event.ID = target
+		}
+		log.Printf("%v", target)
+		thisClient.SendToOthers(event.Fields...)
+
+	//
+	// PS <id> <color> <name> <area> <size> player|monster <x> <y> <reach>
+	//
+	// Place someone (a creature token) on the map.
+	//
+	case "PS":
+		ms.lock.Lock()
+		ms.IdByName[event.Fields[3]] = event.Fields[1]
+		ms.SaveNeeded = true
+		ms.lock.Unlock()
+		thisClient.SendToOthers(event.Fields...)
+
+	//
+	// SYNC [CHAT [<target>]]
+	//
+	// Synchronize the client with the current game state by replaying
+	// all of the saved events we've been tracking.
+	//
+	// In the case of SYNC CHAT, rather than replaying the events, we replay
+	// the saved chat messages. If <target> is supplied, only the messages
+	// with IDs greater than <target> are sent. If <target> is negative, then
+	// only the most recent |<target>| messages are sent.
+	//
+	// The events are stored in EventHistory as a map of key->*MapEvent
+	// (and ChatHistory for chat events as a linear slice of *MapEvent)
+	//
+	// The ChatHistory list is stored in ascending message ID order so we
+	// can simply re-transmit its events by finding our starting point
+	// and going from there. However, the EventHistory map needs to be
+	// sorted first. We store it by key to make updates more efficient
+	// since the more expensive sorting operation only needs to be
+	// performed on the relatively rare SYNC command.
+	//
+	case "SYNC":
+		if len(event.Fields) == 1 {
+			// SYNC
+			// Send the stored events in our history
+			//
+			ms.Sync(thisClient)
+		} else {
+			if event.Fields[1] == "CHAT" {
+				// SYNC CHAT [target]
+				ms.lock.RLock()
+				start := 0
+				if len(event.Fields) > 2 {
+					target, err := strconv.Atoi(event.Fields[2])
+					if err != nil {
+						ms.lock.RUnlock()
+						log.Printf("[client %s] SYNC CHAT target value not understood: %v", thisClient.ClientAddr, err)
+						return
+					}
+					if target < 0 {
+						// send the most recent |target| messages
+						start = len(ms.ChatHistory) + target
+						if start < 0 {
+							start = 0
+						}
+					} else {
+						// send everything from message #target+1 to the end
+						start = sort.Search(len(ms.ChatHistory), func(i int) bool {
+							numeric_id, err := ms.ChatHistory[i].MessageID()
+							if err != nil {
+								return false
 							}
-						} else {
-							// send everything from message #target+1 to the end
-							start = sort.Search(len(ms.ChatHistory), func (i int) bool {
-								numeric_id, err := ms.ChatHistory[i].MessageID()
-								if err != nil { return false }
-								return numeric_id > target
-							})
-						}
+							return numeric_id > target
+						})
 					}
-					for _, message := range ms.ChatHistory[start:] {
-						if message.CanSendTo(thisClient.Username()) {
-							thisClient.Send(message.Fields...)
-						}
+				}
+				for _, message := range ms.ChatHistory[start:] {
+					if message.CanSendTo(thisClient.Username()) {
+						thisClient.Send(message.Fields...)
 					}
-					ms.lock.RUnlock()
-				} else {
-					log.Printf("[client %s] SYNC command not understood", thisClient.ClientAddr)
 				}
-			}
-			return // don't record the SYNC in the history
-
-		//
-		// TO <sender> <recipientlist> <message> [<messageID>]
-		//
-		// Send a chat message to the list of recipients (as with the D
-		// command). The <messageID> is ignored when provided by a client
-		// but one is assigned by the server as it relays the message.
-		// We will also replace the <sender> value with the actual sender's
-		// name.
-		//
-		case "TO":
-			if len(event.Fields) == 4 {
-				event.Fields = append(event.Fields, "")
-			} else if len(event.Fields) != 5 {
-				log.Printf("[client %s] Rejected malformed TO event %v", thisClient.ClientAddr, event.Fields)
-				return
-			}
-			to_all := false
-			to_list, err := ParseTclList(event.Fields[2])
-			if err != nil {
-				thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
-					fmt.Sprintf("ERROR: recipient list not understood: %v", err),
-					NextMessageID())
-				return
-			}
-			for _, recipient := range to_list {
-				if recipient == "*" {
-					to_all = true
-				}
-			}
-			event.Fields[1] = thisClient.Username()
-			ms.lock.Lock()
-			event.AssignMessageID()
-			ms.ChatHistory = append(ms.ChatHistory, event)
-			ms.SaveNeeded = true
-			ms.lock.Unlock()
-			if to_all {
-				thisClient.SendToOthers(event.Fields...)
+				ms.lock.RUnlock()
 			} else {
-				for _, peer := range ms.Clients {
-					if peer.WriteOnly || !peer.Authenticated || peer.ClientAddr == thisClient.ClientAddr {
-						continue
-					}
-					ok := false
-					for _, recipient := range to_list {
-						if recipient == peer.Username() {
-							ok = true
-							break
-						}
-					}
-					if !ok {
-						continue
-					}
-					peer.Send(event.Fields...)
-				}
+				log.Printf("[client %s] SYNC command not understood", thisClient.ClientAddr)
 			}
-			thisClient.Send(event.Fields...)
+		}
+		return // don't record the SYNC in the history
 
-		//
-		// /CONN
-		//
-		// Request a list of connected users.
-		//
-		case "/CONN":
-			thisClient.ConnResponse()
+	//
+	// TO <sender> <recipientlist> <message> [<messageID>]
+	//
+	// Send a chat message to the list of recipients (as with the D
+	// command). The <messageID> is ignored when provided by a client
+	// but one is assigned by the server as it relays the message.
+	// We will also replace the <sender> value with the actual sender's
+	// name.
+	//
+	case "TO":
+		if len(event.Fields) == 4 {
+			event.Fields = append(event.Fields, "")
+		} else if len(event.Fields) != 5 {
+			log.Printf("[client %s] Rejected malformed TO event %v", thisClient.ClientAddr, event.Fields)
+			return
+		}
+		to_all := false
+		to_list, err := ParseTclList(event.Fields[2])
+		if err != nil {
+			thisClient.Send("TO", thisClient.Username(), thisClient.Username(),
+				fmt.Sprintf("ERROR: recipient list not understood: %v", err),
+				NextMessageID())
+			return
+		}
+		for _, recipient := range to_list {
+			if recipient == "*" {
+				to_all = true
+			}
+		}
+		event.Fields[1] = thisClient.Username()
+		ms.lock.Lock()
+		event.AssignMessageID()
+		ms.ChatHistory = append(ms.ChatHistory, event)
+		ms.SaveNeeded = true
+		ms.lock.Unlock()
+		if to_all {
+			thisClient.SendToOthers(event.Fields...)
+		} else {
+			for _, peer := range ms.Clients {
+				if peer.WriteOnly || !peer.Authenticated || peer.ClientAddr == thisClient.ClientAddr {
+					continue
+				}
+				ok := false
+				for _, recipient := range to_list {
+					if recipient == peer.Username() {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					continue
+				}
+				peer.Send(event.Fields...)
+			}
+		}
+		thisClient.Send(event.Fields...)
+
+	//
+	// /CONN
+	//
+	// Request a list of connected users.
+	//
+	case "/CONN":
+		thisClient.ConnResponse()
 	}
 	//
 	// Add this event to the tracked game state
@@ -1859,7 +1866,7 @@ func (ms *MapService) Sync(thisClient *MapClient) {
 	ms.lock.RUnlock()
 	//
 	// sort events by sequence and send them to the client
-	// 
+	//
 	sort.Sort(events_to_sync)
 	thisClient.Send("//", "DUMP OF CURRENT GAME STATE FOLLOWS")
 	thisClient.Send("CLR", "*")
@@ -1872,7 +1879,6 @@ func (ms *MapService) Sync(thisClient *MapClient) {
 	}
 	thisClient.Send("//", "END OF STATE DUMP")
 }
-
 
 //
 // Send player's die-roll presets to all clients connected with
@@ -1991,13 +1997,13 @@ func (ms *MapService) LoadState() error {
 		goto load_err
 	}
 	for result.Next() {
-		var eventid  int64
-		var rawdata  string
+		var eventid int64
+		var rawdata string
 		var sequence int64
-		var key      string
-		var class    string
-		var objid    string
-		var extra    string
+		var key string
+		var class string
+		var objid string
+		var extra string
 		err = result.Scan(&eventid, &rawdata, &sequence, &key, &class, &objid)
 		if err != nil {
 			log.Printf("LoadState: error scanning results from events table: %v", err)
@@ -2032,7 +2038,7 @@ func (ms *MapService) LoadState() error {
 		subresult.Close()
 		ms.EventHistory[event.Key] = event
 		if nextEventSequence <= event.Sequence {
-			nextEventSequence = event.Sequence+1
+			nextEventSequence = event.Sequence + 1
 		}
 	}
 	result.Close()
@@ -2044,8 +2050,8 @@ func (ms *MapService) LoadState() error {
 		goto load_err
 	}
 	for result.Next() {
-		var rawdata  string
-		var msgid    int
+		var rawdata string
+		var msgid int
 		err = result.Scan(&rawdata, &msgid)
 		if err != nil {
 			log.Printf("LoadState: error scanning result of chats table query: %v", err)
@@ -2085,7 +2091,7 @@ func (ms *MapService) LoadState() error {
 			log.Printf("LoadState: error scanning image table: %v", err)
 			goto load_err
 		}
-		ms.ImageList[name + "‖" + zoom] = location
+		ms.ImageList[name+"‖"+zoom] = location
 	}
 	result.Close()
 
@@ -2162,18 +2168,26 @@ func (ms *MapService) SaveState() error {
 		delete from images;
 		delete from idbyname;
 		delete from classbyid;
-	`); err != nil { goto bail_out }
+	`); err != nil {
+		goto bail_out
+	}
 
 	ms.lock.RLock()
 	for _, event = range ms.EventHistory {
 		rawdata, err = event.RawEventText()
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 		res, err = tx.Exec(`insert into events (rawdata, sequence, key, class, objid)
 			values (?, ?, ?, ?, ?)`,
 			rawdata, event.Sequence, event.Key, event.Class, event.ID)
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 		eventid, err = res.LastInsertId()
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 		for _, extra = range event.MultiRawData {
 			if _, err = tx.Exec(`insert into extradata (eventid, datarow) values (?, ?)`,
 				eventid, extra); err != nil {
@@ -2183,9 +2197,13 @@ func (ms *MapService) SaveState() error {
 	}
 	for _, chat = range ms.ChatHistory {
 		msgid, err = chat.MessageID()
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 		rawdata, err = chat.RawEventText()
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 		if _, err = tx.Exec(`insert into chats (rawdata, msgid) values (?, ?)`,
 			rawdata, msgid); err != nil {
 			goto save_err
@@ -2199,17 +2217,23 @@ func (ms *MapService) SaveState() error {
 			continue
 		}
 		_, err = tx.Exec(`insert into images (name, zoom, location) values (?, ?, ?)`, parts[0], parts[1], location)
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 	}
 
 	for k, v := range ms.IdByName {
 		_, err = tx.Exec(`insert into idbyname (name, objid) values (?, ?)`, k, v)
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 	}
 
 	for k, v := range ms.ClassById {
 		_, err = tx.Exec(`insert into classbyid (objid, class) values (?, ?)`, k, v)
-		if err != nil { goto save_err }
+		if err != nil {
+			goto save_err
+		}
 	}
 
 	ms.lock.RUnlock()
@@ -2278,6 +2302,7 @@ func (ms *MapService) DumpState() {
 	log.Printf("******************************** END ******************************************")
 	ms.lock.RUnlock()
 }
+
 // @[00]@| GMA 4.2.2
 // @[01]@|
 // @[10]@| Copyright © 1992–2020 by Steven L. Willoughby
