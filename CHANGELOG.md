@@ -10,4 +10,7 @@
 Added note pointing to paizo's Community Use Policy and GMA's usage of Pathfinder
 game-related information.
 
+### Changes
+* Switched to server protocol 400. This is a major change, cleaning up the various protocol commands and changing the data marshaling for each command from TCL lists to JSON strings.
+
 ## Previous unnumbered versions

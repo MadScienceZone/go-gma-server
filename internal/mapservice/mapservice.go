@@ -30,37 +30,227 @@
 package mapservice
 
 import (
-	"bufio"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/base64"
-	"fmt"
+	"context"
 	"log"
 	"net"
-	"os"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
+
+	"github.com/MadScienceZone/go-gma/v4/auth"
+	"github.com/MadScienceZone/go-gma/v4/mapper"
 )
 
 //
-// PROTOCOL_VERSION is the version of the client/server protocol this implementation uses.
-// This is a manually-set value rather than getting set automatically by
-// the set_version script, because it reflects what the code in here actually does,
-// not whatever version number was set for the product (which is what this
-// code is _expected_ to use). We have a unit tests that flags if this value
-// isn't the same as what set_version is set to expect.
+// Server-side analogue to the go-gma/v4/mapper/mapclient.go functions.
+// These manage the server's connections to all of its clients.
 //
-const PROTOCOL_VERSION = "400"
+// EXPERIMENTAL CODE
+//
+// THIS PACKAGE IS STILL A WORK IN PROGRESS	and has not been
+// completely tested yet. Although GMA generally is a stable
+// product, this module of it is new, and is now.
+//
 
 //
-// Turn on DEBUGGING to get extra information logged during transactions with clients
+// Connection describes a connection to a client.
 //
-const DEBUGGING = false
+type Connection struct {
+	// Context context.Context
+	Address string
 
+	// Client identity information is held here, even if
+	// we are not requiring client authentication.
+	Authenticator auth.Authenticator
+
+	// What messages does this client wish to receive?
+	// If this is nil, the client accepts all possible messages.
+	// Otherwise, only messages which exist in the map and have a
+	// true value are to be sent to them.
+	Subscriptions map[ServerMessage]bool
+
+	clientConn mapper.MapConnection
+	signedOn   bool
+	server     *MapServer
+}
+
+//
+// IsReady returns true if the client's connection is in a
+// state where it can be part of the normal conversation with
+// the other peers.
+//
+func (c *Connection) IsReady() bool {
+	return c != nil && c.clientConn.IsReady() && c.signedOn
+}
+
+//
+// Log debugging info at the given level.
+//
+func (c *Connection) debug(level input, msg string) {
+	if c != nil && c.server != nil {
+		c.server.debug(level, msg)
+	}
+}
+
+func (s *MapServer) debug(level input, msg string) {
+	if s != nil && s.DebuggingLevel >= level && s.Logger != nil {
+		for i, line := range strings.Split(msg, "\n") {
+			if line != "" {
+				s.Logger.Printf("DEBUG%d.%02d: %s", level, i, line)
+			}
+		}
+	}
+}
+
+//
+// Close terminates the connection to the client.
+//
+func (c *Connection) Close() {
+	c.debug(1, "Close()")
+	c.clientConn.Close()
+}
+
+//
+// ServeForever listens for incoming connections and dispatches
+// client session goroutines for each as they arrive.
+// It will stop when its passed context signals it to stop or it encounters
+// an error. In either case, the reason for the stop is signalled by
+// writing to its done channel with an error value.
+//
+func (s *MapServer) ServeForever(ctx context.Context, done chan error) {
+	incoming, err := net.Listen("tcp", s.Endpoint)
+	if err != nil {
+		done <- err
+		return
+	}
+	defer func() {
+		if err := incoming.Close(); err != nil {
+			s.Logf("close incoming socket: %v", err)
+		}
+	}()
+
+	expiredClients := make(chan *Connection, 16)
+	for {
+		select {
+		case client, err := incoming.Accept():
+			if err != nil {
+				s.Logf("incoming connection: %v", err)
+				continue
+			}
+			newConnection := &Connection{
+				Address: client.Addr().String(),
+				Authenticator: auth.Authenticator{
+					Secret:   s.secret,
+					GmSecret: s.gmSecret,
+				},
+				//Subscriptions: make(map[ServerMessage]bool),
+				// nil map here means "take everything"; we'll change this later
+				clientConn: mapper.NewMapConnection(client),
+				server:     s,
+			}
+			s.Clients = append(s.Clients, newConnection)
+			go newConnection.ServeClient(expiredClients)
+
+		case c := <-expiredClients:
+			// close connection (in case it wasn't already closed)
+			c.Close() // TODO: make sure this is safe to do even if already closed
+			c.Logf("stopped listening to client")
+
+			// Find this client in the list of clients and get rid of it
+			for i, target := range s.Clients {
+				if target == c {
+					if i+1 < len(s.Clients) {
+						s.Clients[i] = s.Clients[len(s.Clients)-1]
+					}
+					s.Clients = s.Clients[:len(s.Clients)-1]
+					c.Logf("removed client from list (%d remain)", len(s.Clients))
+					break
+				}
+			}
+
+		case <-ctx.Done():
+			s.Logf("stopped listener: %v", ctx.Err())
+			// TODO: wait for clients?
+			done <- ctx.Err()
+			return
+		}
+	}
+}
+
+func (c *Connection) Logf(format string, args ...any) {
+	if c != nil && c.server != nil {
+		c.server.Logf("[client %s] "+format, c.Address, args...)
+	}
+}
+
+func (s *MapServer) Logf(format string, args ...any) {
+	if s != nil && s.Logger != nil {
+		s.Logger.Printf(format, args...)
+	}
+}
+
+//
+// ServeClient is a routine that serves a single client,
+// reading commands from it and sending back responses
+// to it.
+//
+func (c *Connection) ServeClient(expired chan *Connection) {
+	if c == nil || c.server == nil {
+		expired <- c
+		return
+	}
+
+	defer func() {
+		expired <- c
+		c.Logf("client signals end of connection")
+	}()
+
+	c.Logf("accepted connection from client")
+
+	// send initial greeting (comments)
+	for _, greeting := range c.server.InitialGreeting {
+		if err := c.clientConn.Send(mapper.Comment, greeting); err != nil {
+			c.Logf("sending initial greeting \"%s\": %v", greeting, err)
+		}
+	}
+
+	// TODO: authentication negotiation
+	// TODO: send initial greeting (rest)
+	// TODO: loop over conversation
+	// TODO: how does the server signal "please exit" to the client?
+}
+
+//
+// MapServer represents the global state and configuration of the
+// server itself.
+//
+type MapServer struct {
+	// Our incoming connection endpoint, e.g. ":2323"
+	Endpoint string
+
+	// Our configured logging destination
+	Logger         *log.Logger
+	DebuggingLevel uint
+
+	// Client greetings
+	InitialGreeting []string
+	InitialCommands []struct { // XXX
+		Message ServerMessage // XXX
+		Payload ServerPayload // XXX
+	}
+
+	// All of the connected peers
+	Clients []*Connection
+
+	secret   []byte
+	gmSecret []byte
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+/*
 //
 // We will terminate clients if they've been idle this many seconds and we have a full
 // channel of messages trying to send to them
@@ -1990,7 +2180,7 @@ func (ms *MapService) LoadState() error {
 	ms.lock.Lock()
 	ms.EventHistory = make(map[string]*MapEvent)
 	result, err = ms.Database.Query(`
-		select eventid, rawdata, sequence, key, class, objid 
+		select eventid, rawdata, sequence, key, class, objid
 		from events`)
 	if err != nil {
 		log.Printf("LoadState: error loading from events table: %v", err)
@@ -2341,3 +2531,4 @@ func (ms *MapService) DumpState() {
 // @[50]@| This software is not intended for any use or application in which
 // @[51]@| the safety of lives or property would be at risk due to failure or
 // @[52]@| defect of the software.
+*/

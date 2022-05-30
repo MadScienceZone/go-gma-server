@@ -6,30 +6,30 @@ go-gma-server \- GMA battle grid map server
 .SH SYNOPSIS
 '\" <<usage>>
 .na
-.B go-gma-server
+.B go\-gma\-server
 .RB [ \-h ]
 .ad
 .LP
 .na
-.B go-gma-server
-.RB [ \-\-help ]
+.B go\-gma\-server
+.RB [ \-help ]
 .ad
 .LP
 .na
-.B go-gma-server
-.RB [ \-\-init\-file
+.B go\-gma\-server
+.RB [ \-init\-file
 .IR path ]
-.RB [ \-\-log\--file
+.RB [ \-log\-file
 .IR path ]
-.RB [ \-\-mysql
+.RB [ \-mysql
 .IR database ]
-.RB [ \-\-password\-file
+.RB [ \-password\-file
 .IR pass-file ]
-.RB [ \-\-port
-.IR port ]
-.RB [ \-\-save\-interval
+.RB [ \-endpoint
+.RI [ host ]\fB:\fP port ]
+.RB [ \-save\-interval
 .IR mins ]
-.RB [ \-\-sqlite
+.RB [ \-sqlite
 .IR path ]
 .ad
 '\" <</usage>>
@@ -40,7 +40,7 @@ The individual
 clients used by players in a game may keep in contact with one another so that they all
 display the same contents. A change made on one client (moving a creature token or
 adding a room, say) appears on all the others. This is accomplished by starting a
-.B go-gma-server
+.B go\-gma\-server
 process and having all of the 
 .B mapper 
 clients connect to it via their 
@@ -80,25 +80,52 @@ The original Python implementation is documented in
 .SH OPTIONS
 .LP
 The following options control the behavior of
-.BR go-gma-server .
+.BR go\-gma\-server .
 '\" <<list>>
 .TP
-.BR \-h , \-\-help
+.BR \-h , \-help
 Print a usage summary and exit.
 .TP
-.BI "\-\-init\-file " init-file
+.BI "\-init\-file " init-file
 Each line in
 .I init-file
 will be sent verbatim to each client upon connection to the server.
 The lines of this file must therefore be valid mapper protocol commands as documented in
 .BR mapper (6).
+It is permitted for the JSON data portion of the command to span multiple lines. In
+this case, all lines after the first must be indented, and the final closing brace
+unindented on a line by itself. For example, the line
+.RS
+.RS
+.LP
+.na
+.nf
+.B "AC {\[dq]Name\[dq]:\[dq]Fred\[dq],\[dq]ObjID\[dq]:\[dq]PC123\[dq],\[dq]Color\[dq]:\[dq]red\[dq]}"
+.fi
+.ad
+.RE
+.LP
+could also be written in the file as:
+.na
+.nf
+.RS
+.LP
+.B "AC {"
+.B "\ \ \ \[dq]Name\[dq]: \[dq]Fred\[dq],"
+.B "\ \ \ \[dq]ObjID\[dq]: \[dq]PC123\[dq],"
+.B "\ \ \ \[dq]Color\[dq]: \[dq]red\[dq]"
+.B "}"
+.fi
+.ad
+.RE
+.LP
 The original version of the server only read this file at start-up, repeating its
 contents from memory to all clients; this version reads the file every time a client
 connects, allowing changes to be made to the initialization file which take effect
 immediately.
+.LP
 The following special commands may appear in this file. These are not sent to
 the clients directly, but trigger other setup events in the server itself:
-.RS
 '\" <<desc>>
 .TP 15
 .B SYNC
@@ -109,14 +136,55 @@ command for each client as it connects (after authentication if that is required
 .TP
 .BI "LOAD " filename
 This directive is deprecated. It is not supported by the Go version of the server.
+.LP
+Any comments (i.e., lines starting with 
+.RB \*(lq // \*(rq)
+are sent immediately. All other commands are sent after successful authentication,
+if authentication is enabled.
 .RE
 '\" <</>>
 .TP
-.BI "\-\-log\-file " log-file
+.BI "\-log\-file " log-file
 Append a record of server actions and diagnostic messages to the specified file.
-By default, this log is sent to the standard output.
+By default, this is sent to the standard error device, as is the case if
+.I log-file
+is explicitly given the value 
+.RB \*(lq \- \*(rq
+(single hyphen). If
+.I log-file
+is the empty string, no log information is produced at all.
+.RS
+.LP
+The
+.I log-file
+string may include a number of special tokens which are replaced with dynamic
+values at runtime. These include:
+.TS
+center;
+cB l cB l.
+%A	full weekday	%p	AM or PM
+%a	abbreviated weekday	%R	=%H:%M
+%B	full month	%r	=%I:%M:%S %p
+%b	abbreviated month	%S	second as 00\-60
+%C	year 00\-99	%s	UNIX timestamp as integer
+%c	time and date	%T	=%H:%M:%S
+%d	date as 01\-31	%U	week as 00\-53 (Sun start)
+%e	date as (sp)1\-31	%u	weekday 1=Mon, 7=Sun
+%F	=%Y-%m-%d	%V	week as 00\-53 (Mon start)
+%H	hour 00\-23	%v	=%e-%b-%Y
+%h	=%b	%W	week as 00\-53 (Mon start)
+%I	hour as 01\-12	%w	weekday 0=Sun, 6=Sat
+%j	day of year as 001\-366	%X	time
+%k	hour as (sp)0\-23	%Y	full year
+%L	milliseconds as 000\-999	%y	two-digit year
+%l	hour as (sp)1\-12	%Z	time zone name
+%M	minute as 00\-59	%z	time zone offset
+%m	month as 01\-12	%\[mc]	microseconds as 000\-999
+%P	process ID	%%	literal % character
+.TE
+.RE
 .TP
-.BI "\-\-password\-file " pass-file
+.BI "\-password\-file " pass-file
 If this option is given, the server will require clients to authenticate with a
 valid password. The first line of
 .I pass-file
@@ -141,19 +209,19 @@ will successfully authenticate if the general-use shared password (the first lin
 the password file) is given.
 .RE
 .TP
-.BI "\-\-port " port
-The service will accept incoming connections on the specified TCP port. The default is 2323.
+.BI "\-endpoint " \fR[\fPhost\fR]\fP\fB:\fP port
+The service will accept incoming connections on the specified TCP port. The default is \*(lq:2323\*(rq.
 .TP
-.BI "\-\-save\-interval " mins
+.BI "\-save\-interval " mins
 If the
-.B \-\-mysql
+.B \-mysql
 or
-.B \-\-sqlite
+.B \-sqlite
 option is given, this sets the frequency (in minutes) at which the game state is saved
 to the database.
 The default is every 10 minutes. 
 .TP
-.BI "\-\-sqlite " path
+.BI "\-sqlite " path
 Open the sqlite3 database 
 .I path
 as the persistent record of game state and history. Any saved game state is read in from
@@ -161,9 +229,9 @@ this database when the service starts, allowing the game to continue from where 
 when the server was stopped. The service will periodically save its current state to this
 database.
 .TP
-.BI "\-\-mysql " database
+.BI "\-mysql " database
 Analogous to the
-.B \-\-sqlite
+.B \-sqlite
 option, this uses a MySQL database for persistent storage. 
 '\" <</ital-is-var>>
 .I "This is not currently implemented."
@@ -226,4 +294,4 @@ This signal causes the server to save its current state if needed.
 Steve Willoughby / steve@madscience.zone.
 .SH BUGS
 .SH COPYRGHT
-Part of the GMA software suite, copyright \(co 1992\-2020 by Steven L. Willoughby (MadScienceZone), Aloha, Oregon, USA. All Rights Reserved. Distributed under BSD-3-Clause License. \"@m(c)@
+Part of the GMA software suite, copyright \(co 1992\-2021 by Steven L. Willoughby (MadScienceZone), Aloha, Oregon, USA. All Rights Reserved. Distributed under BSD-3-Clause License. \"@m(c)@
