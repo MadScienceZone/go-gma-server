@@ -1,3 +1,4 @@
+'t
 '\" <<ital-is-var>>
 '\" <<bold-is-fixed>>
 .TH GO-GMA-SERVER 6 "GMA Toolkit 4.2.2" 16-Nov-2020 "Games" \" @@mp@@
@@ -21,14 +22,14 @@ go-gma-server \- GMA battle grid map server
 .IR path ]
 .RB [ \-log\-file
 .IR path ]
-.RB [ \-mysql
-.IR database ]
+'\" .RB [ \-mysql
+'\" .IR database ]
 .RB [ \-password\-file
 .IR pass-file ]
 .RB [ \-endpoint
 .RI [ host ]\fB:\fP port ]
 .RB [ \-save\-interval
-.IR mins ]
+.IR interval ]
 .RB [ \-sqlite
 .IR path ]
 .ad
@@ -212,14 +213,37 @@ the password file) is given.
 .BI "\-endpoint " \fR[\fPhost\fR]\fP\fB:\fP port
 The service will accept incoming connections on the specified TCP port. The default is \*(lq:2323\*(rq.
 .TP
-.BI "\-save\-interval " mins
+.BI "\-save\-interval " interval
 If the
-.B \-mysql
-or
+'\" .B \-mysql
+'\" or
 .B \-sqlite
-option is given, this sets the frequency (in minutes) at which the game state is saved
+option is given, this sets the frequency at which the game state is saved
 to the database.
-The default is every 10 minutes. 
+The
+.I interval
+value is a number followed by a unit, or a number of these together in one string
+(units are
+.RB \*(lq h \*(rq
+for hours,
+.RB \*(lq m \*(rq
+for minutes,
+.RB \*(lq s \*(rq
+for seconds,
+.RB \*(lq ms \*(rq
+for milliseconds,
+.RB \*(lq us \*(rq
+or
+.RB \*(lq \[mc]s \*(rq
+for microseconds,
+and
+.RB \*(lq ns \*(rq
+for nanoseconds)
+such as 
+.RB \*(lq 10m30s \*(rq.
+The default is 
+.RB \*(lq 10m \*(rq
+meaning every 10 minutes. 
 .TP
 .BI "\-sqlite " path
 Open the sqlite3 database 
@@ -228,13 +252,13 @@ as the persistent record of game state and history. Any saved game state is read
 this database when the service starts, allowing the game to continue from where it was
 when the server was stopped. The service will periodically save its current state to this
 database.
-.TP
-.BI "\-mysql " database
-Analogous to the
-.B \-sqlite
-option, this uses a MySQL database for persistent storage. 
+'\" .TP
+'\" .BI "\-mysql " database
+'\" Analogous to the
+'\" .B \-sqlite
+'\" option, this uses a MySQL database for persistent storage. 
 '\" <</ital-is-var>>
-.I "This is not currently implemented."
+'\" .I "This is not currently implemented."
 '\" <<ital-is-var>>
 '\" <</>>
 .SH SECURITY

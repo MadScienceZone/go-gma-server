@@ -91,9 +91,9 @@ func (a *Application) Debugf(level int, format string, args ...any) {
 //
 func (a *Application) GetAppOptions() error {
 
-	var initFile = flag.String("init-file", "", "Load initial client commands from file")
-	var logFile = flag.String("log-file", "-", "Write log to given pathname (stderr if '-')")
-	var passFile = flag.String("password-file", "", "Require authentication with given password file")
+	var initFile = flag.String("init-file", "", "Load initial client commands from named file path")
+	var logFile = flag.String("log-file", "-", "Write log to given pathname (stderr if '-'); special % tokens allowed in path")
+	var passFile = flag.String("password-file", "", "Require authentication with named password file")
 	var endPoint = flag.String("endpoint", ":2323", "Incoming connection endpoint ([host]:port)")
 	var saveInterval = flag.String("save-interval", "10m", "Save internal state this often")
 	var sqlDbName = flag.String("sqlite", "", "Specify filename for sqlite database to use")
