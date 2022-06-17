@@ -24,6 +24,14 @@ The protocol implemented by the server for communication with its clients
 is documented in the mapper(6) client manual page, toward the end of that
 document.
 
+## Instrumentation
+The server is written to report runtime performance telemetry to New Relic, but
+by default this functionality is disabled. To enable it, compile with the `-tags instrumentation` compiler option. 
+
+If you do this you need to set up a free New Relic account at newrelic.com, and
+then put your license key in an environment variable called `NEW_RELIC_LICENSE_KEY` when
+starting the GMA server.
+
 ## Documentation
 The full [GMA manual](https://www.madscience.zone/gma/gma.pdf) includes
 notes on the usage of the server and clients (although this will need to

@@ -33,14 +33,16 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/MadScienceZone/go-gma/v4/mapper"
+	"github.com/newrelic/go-agent/v3/newrelic"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 //
-// Auto-configure values
+// Auto-configured values
 //
 
 const GMAVersionNumber = "4.0.0" // @@##@@
@@ -132,12 +134,15 @@ func eventMonitor(sig_chan chan os.Signal, stop_chan chan int, ms *mapservice.Ma
 */
 
 func main() {
+	var nrApp *newrelic.Application
+	var err error
+
 	app := Application{
 		Logger: log.Default(),
 	}
 	app.Logger.SetPrefix("go-gma-server: ")
 	if err := app.GetAppOptions(); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal error: %v", err)
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 		os.Exit(1)
 	}
 	app.Logf("Server %s started", GMAVersionNumber)
@@ -145,6 +150,44 @@ func main() {
 		mapper.GMAMapperProtocol,
 		mapper.MinimumSupportedMapProtocol,
 		mapper.MaximumSupportedMapProtocol)
+
+	/* instrumentation */
+	// set the following environment variables for the New Relic
+	// Go Agent:
+	//    NEW_RELIC_APP_NAME = the name you want to appear in the datasets
+	//    NEW_RELIC_LICENSE_KEY = your license key
+	//
+	if InstrumentCode {
+		nrApp, err = newrelic.NewApplication(
+			newrelic.ConfigAppName("go-gma-server"),
+			newrelic.ConfigFromEnvironment(),
+			newrelic.ConfigDebugLogger(os.Stdout),
+		)
+		if err != nil {
+			app.Logf("unable to start instrumentation: %v", err)
+			os.Exit(1)
+		}
+		defer func() {
+			app.Logf("waiting for instrumentation to finish (max 30 sec) ...")
+			nrApp.Shutdown(30 * time.Second)
+		}()
+	}
+
+	for {
+		func() {
+			if InstrumentCode {
+				defer nrApp.StartTransaction("testing").End()
+			}
+			time.Sleep(10 * time.Second)
+		}()
+	}
+
+	// TODO instrumentation
+	/*
+		txn := nrapp.StartTransaction("background")
+		defer txn.End()
+		// do stuff
+	*/
 
 	/*
 		GMAMapperProtocol           = 400      // @@##@@ auto-configured
