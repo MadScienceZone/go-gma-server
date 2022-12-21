@@ -19,8 +19,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/MadScienceZone/go-gma/v4/auth"
-	"github.com/MadScienceZone/go-gma/v4/mapper"
+	"github.com/MadScienceZone/go-gma/v5/auth"
+	"github.com/MadScienceZone/go-gma/v5/mapper"
 )
 
 //

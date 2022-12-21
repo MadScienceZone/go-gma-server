@@ -88,20 +88,20 @@ The following options control the behavior of
 Print a usage summary and exit.
 .TP
 .BI "\-init\-file " init-file
-Each line in
+Each command in
 .I init-file
-will be sent verbatim to each client upon connection to the server.
+will be sent to each client upon connection to the server.
 The lines of this file must therefore be valid mapper protocol commands as documented in
 .BR mapper (6).
-It is permitted for the JSON data portion of the command to span multiple lines. In
-this case, all lines after the first must be indented, and the final closing brace
-unindented on a line by itself. For example, the line
+The JSON data portion of each command may span multiple lines. In
+this case, all lines after the first must be indented. The final closing brace
+may appear unindented on a line by itself. For example, the line
 .RS
 .RS
 .LP
 .na
 .nf
-.B "AC {\[dq]Name\[dq]:\[dq]Fred\[dq],\[dq]ObjID\[dq]:\[dq]PC123\[dq],\[dq]Color\[dq]:\[dq]red\[dq]}"
+.B "\fCAC {\[dq]Name\[dq]:\[dq]Fred\[dq],\[dq]ObjID\[dq]:\[dq]PC123\[dq],\[dq]Color\[dq]:\[dq]red\[dq]}\fR"
 .fi
 .ad
 .RE
@@ -111,14 +111,29 @@ could also be written in the file as:
 .nf
 .RS
 .LP
-.B "AC {"
-.B "\ \ \ \[dq]Name\[dq]: \[dq]Fred\[dq],"
-.B "\ \ \ \[dq]ObjID\[dq]: \[dq]PC123\[dq],"
-.B "\ \ \ \[dq]Color\[dq]: \[dq]red\[dq]"
-.B "}"
+.ft C
+AC {
+\ \ \ \[dq]Name\[dq]: \[dq]Fred\[dq],
+\ \ \ \[dq]ObjID\[dq]: \[dq]PC123\[dq],
+\ \ \ \[dq]Color\[dq]: \[dq]red\[dq]
+}
+.ft
 .fi
 .ad
 .RE
+.LP
+Commands which are only sent by clients to the server may not appear in this file.
+Note that the protocol recommends that only comments should be sent before authentication,
+and even so only
+comments,
+.BR AC ,
+.BR DSM ,
+.BR UPDATES ,
+and
+.B WORLD
+commands are allowed to be sent before the server's
+.B READY
+command.
 .LP
 The original version of the server only read this file at start-up, repeating its
 contents from memory to all clients; this version reads the file every time a client
@@ -129,19 +144,41 @@ The following special commands may appear in this file. These are not sent to
 the clients directly, but trigger other setup events in the server itself:
 '\" <<desc>>
 .TP 15
+.B AUTH
+If this command appears in the initialization file, only the contents up to
+that line are sent before a client successfully authenticates to the server.
+After authentication is complete, the remainder of the initialization file
+will be sent to the client. 
+There is no JSON data following this command.
+.TP
+.B READY
+If this command appears in the initialization file, this indicates that the server's
+.B READY
+command should be sent to the client at this point. This allows the initialization file
+to specify arbitrary server commands automatically beyond the limited set allowed before
+the 
+.B READY
+command is sent. If this does not appear in the file, the server will automatically send
+.B READY
+when the client is fully signed-on and it is ready to communicate with the client normally.
+There is no JSON data following this command.
+.TP
 .B SYNC
 Enables sync-on-connect mode. With this set, the server will automatically perform the
 effects of a 
 .B SYNC
 command for each client as it connects (after authentication if that is required).
-.TP
-.BI "LOAD " filename
-This directive is deprecated. It is not supported by the Go version of the server.
+There is no JSON data following this command.
 .LP
-Any comments (i.e., lines starting with 
-.RB \*(lq // \*(rq)
-are sent immediately. All other commands are sent after successful authentication,
-if authentication is enabled.
+The server commands
+.BR CONN ,
+.BR DENIED ,
+.BR GRANTED ,
+.BR OK ,
+.BR PRIV ,
+and
+.B PROTOCOL
+may never appear in this file.
 .RE
 '\" <</>>
 .TP
@@ -162,18 +199,18 @@ string may include a number of special tokens which are replaced with dynamic
 values at runtime. These include:
 .TS
 center;
-cB l cB l.
+cfC l cfC l.
 %A	full weekday	%p	AM or PM
-%a	abbreviated weekday	%R	=%H:%M
-%B	full month	%r	=%I:%M:%S %p
+%a	abbreviated weekday	%R	=\fC%H:%M\fR
+%B	full month	%r	=\fC%I:%M:%S %p\fR
 %b	abbreviated month	%S	second as 00\-60
 %C	year 00\-99	%s	UNIX timestamp as integer
-%c	time and date	%T	=%H:%M:%S
+%c	time and date	%T	=\fC%H:%M:%S\fR
 %d	date as 01\-31	%U	week as 00\-53 (Sun start)
 %e	date as (sp)1\-31	%u	weekday 1=Mon, 7=Sun
-%F	=%Y-%m-%d	%V	week as 00\-53 (Mon start)
-%H	hour 00\-23	%v	=%e-%b-%Y
-%h	=%b	%W	week as 00\-53 (Mon start)
+%F	=\fC%Y-%m-%d\fR	%V	week as 00\-53 (Mon start)
+%H	hour 00\-23	%v	=\fC%e-%b-%Y\fR
+%h	=\fC%b\fR	%W	week as 00\-53 (Mon start)
 %I	hour as 01\-12	%w	weekday 0=Sun, 6=Sat
 %j	day of year as 001\-366	%X	time
 %k	hour as (sp)0\-23	%Y	full year
@@ -181,7 +218,7 @@ cB l cB l.
 %l	hour as (sp)1\-12	%Z	time zone name
 %M	minute as 00\-59	%z	time zone offset
 %m	month as 01\-12	%\[mc]	microseconds as 000\-999
-%P	process ID	%%	literal % character
+%P	process ID	%%	literal \fC%\fR character
 .TE
 .RE
 .TP

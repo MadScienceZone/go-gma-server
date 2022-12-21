@@ -35,7 +35,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/MadScienceZone/go-gma/v4/mapper"
+	"github.com/MadScienceZone/go-gma/v5/mapper"
 	"github.com/newrelic/go-agent/v3/newrelic"
 
 	_ "github.com/mattn/go-sqlite3"
