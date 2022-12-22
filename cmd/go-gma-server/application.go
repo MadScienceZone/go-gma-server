@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,11 +11,49 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/MadScienceZone/go-gma/v5/auth"
 	"github.com/MadScienceZone/go-gma/v5/mapper"
 	"github.com/lestrrat-go/strftime"
 )
+
+type DebugFlags uint64
+
+const (
+	DebugAuth DebugFlags = 1 << iota
+	DebugEvents
+	DebugInit
+	DebugMisc
+	DebugAll = 0xffffffff
+)
+
+func DebugFlagNames(flags DebugFlags) string {
+	if flags == 0 {
+		return "<none>"
+	}
+	if flags == DebugAll {
+		return "<all>"
+	}
+
+	var list []string
+	for _, f := range []struct{
+		bits DebugFlags
+		name string
+	}{
+		{bits: DebugAuth, name: "auth"},
+		{bits: DebugEvents, name: "events"},
+		{bits: DebugInit, name: "init"},
+		{bits: DebugMisc, name: "misc"},
+	} {
+		if (flags & f.bits) != 0 {
+			list = append(list, f.name)
+		}
+	}
+
+	return "<" + strings.Join(list, ",") + ">"
+}
 
 //
 // Application holds the global settings and other context for the application
@@ -25,9 +64,8 @@ type Application struct {
 	Logger *log.Logger
 
 	// If DebugLevel is 0, no extra debugging output will be logged.
-	// Otherwise, increasing levels of output are generated for
-	// increasing values of DebugLevel.
-	DebugLevel int
+	// Otherwise, it gives a set of debugging topics to report.
+	DebugLevel DebugFlags
 
 	// Endpoint is the "[host]:port" string which specifies where our
 	// incoming socket is listening.
@@ -38,23 +76,29 @@ type Application struct {
 	InitFile string
 
 	clientPreamble struct {
-		syncData bool
-		lastRead time.Time
-		preamble []string
-		postAuth []string
+		syncData  bool
+		preamble  []string
+		postAuth  []string
 		postReady []string
+		lock	  sync.RWMutex
 	}
 
 	// If not empty, we require authentication, with passwords taken
 	// from this file.
 	PasswordFile string
+	clientAuth struct {
+		groupPassword     []byte
+		gmPassword        []byte
+		personalPasswords map[string][]byte
+		lock              sync.RWMutex
+	}
 
 	// How often to save internal state to disk.
-	SaveInterval time.Duration
+	//SaveInterval time.Duration
 
 	// Pathname for database file.
 	DatabaseName string
-
+	sqldb *sql.DB
 }
 
 //
@@ -62,9 +106,12 @@ type Application struct {
 // debug level. It acts just like fmt.Println as far as formatting
 // its arguments.
 //
-func (a *Application) Debug(level int, message ...any) {
-	if a != nil && a.Logger != nil && a.DebugLevel >= level {
-		a.Logger.Println(message...)
+func (a *Application) Debug(level DebugFlags, message ...any) {
+	if a != nil && a.Logger != nil && (a.DebugLevel & level) != 0 {
+		var dmessage []any
+		dmessage = append(dmessage, DebugFlagNames(level))
+		dmessage = append(dmessage, message...)
+		a.Logger.Println(dmessage...)
 	}
 }
 
@@ -94,9 +141,9 @@ func (a *Application) Logf(format string, args ...any) {
 // Debugf works like Debug, but takes a format string and argument
 // list just like fmt.Printf does.
 //
-func (a *Application) Debugf(level int, format string, args ...any) {
-	if a != nil && a.Logger != nil && a.DebugLevel >= level {
-		a.Logger.Printf(format, args...)
+func (a *Application) Debugf(level DebugFlags, format string, args ...any) {
+	if a != nil && a.Logger != nil && (a.DebugLevel & level) != 0 {
+		a.Logger.Printf(DebugFlagNames(level)+" "+format, args...)
 	}
 }
 
@@ -109,9 +156,26 @@ func (a *Application) GetAppOptions() error {
 	var logFile = flag.String("log-file", "-", "Write log to given pathname (stderr if '-'); special % tokens allowed in path")
 	var passFile = flag.String("password-file", "", "Require authentication with named password file")
 	var endPoint = flag.String("endpoint", ":2323", "Incoming connection endpoint ([host]:port)")
-	var saveInterval = flag.String("save-interval", "10m", "Save internal state this often")
+//	var saveInterval = flag.String("save-interval", "10m", "Save internal state this often")
 	var sqlDbName = flag.String("sqlite", "", "Specify filename for sqlite database to use")
+	var debugFlags = flag.String("debug", "", "List the debugging trace types to enable")
 	flag.Parse()
+
+	if *debugFlags != "" {
+		for _, flag := range strings.Split(*debugFlags, ",") {
+			switch flag {
+			case "none": a.DebugLevel = 0
+			case "all":  a.DebugLevel = DebugAll
+			case "auth":  a.DebugLevel = DebugAuth
+			case "events":  a.DebugLevel = DebugEvents
+			case "init": a.DebugLevel |= DebugInit
+			case "misc": a.DebugLevel |= DebugMisc
+			default:
+				return fmt.Errorf("No such -debug flag: \"%s\"", flag)
+			}
+		}
+		a.Debugf(DebugInit, "debugging flags set to %#v%s", a.DebugLevel, DebugFlagNames(a.DebugLevel))
+	}
 
 	if *logFile == "" {
 		a.Logger = nil
@@ -128,25 +192,26 @@ func (a *Application) GetAppOptions() error {
 			} else {
 				a.Logger.SetOutput(f)
 			}
+			a.Debugf(DebugInit, "Logging to %v", path)
 		}
 	}
 
 	if *initFile != "" {
 		a.InitFile = *initFile
 		a.Logf("reading client initial command set from \"%s\"", a.InitFile)
-		p1, p2, p3, e := a.ClientPreamble()
-		if e != nil {
-			a.Logf("error reading init file \"%s\": %v", a.InitFile, e)
-			os.Exit(1)
+		if err := a.refreshClientPreamble(); err != nil {
+			a.Logf("error reading init file \"%s\": %v", a.InitFile, err)
+			return err
 		}
-		a.Logf("preamble: %v", p1)
-		a.Logf("preamble (post-auth): %v", p2)
-		a.Logf("preamble: (post-ready): %v", p3)
 	}
 
 	if *passFile != "" {
 		a.PasswordFile = *passFile
 		a.Logf("authentication enabled via \"%s\"", a.PasswordFile)
+		if err := a.refreshAuthenticator(); err != nil {
+			a.Logf("unable to set up authentication: %v", err)
+			return err
+		}
 	} else {
 		a.Log("WARNING: authentication not enabled!")
 	}
@@ -158,6 +223,7 @@ func (a *Application) GetAppOptions() error {
 		return fmt.Errorf("non-empty tcp [host]:port value required")
 	}
 
+	/*
 	if *saveInterval == "" {
 		a.SaveInterval = 10 * time.Minute
 		a.Logf("defaulting state save interval to 10 minutes")
@@ -169,6 +235,7 @@ func (a *Application) GetAppOptions() error {
 		a.SaveInterval = d
 		a.Logf("saving state to disk every %v", a.SaveInterval)
 	}
+	*/
 
 	if *sqlDbName == "" {
 		return fmt.Errorf("database name is required")
@@ -243,111 +310,127 @@ func (a *Application) FancyFileName(path string) (string, error) {
 		return path, err
 	}
 
-	return strftime.Format(path, time.Now(),
+	newstr, err := strftime.Format(path, time.Now(),
 		strftime.WithSpecificationSet(ss),
 		strftime.WithUnixSeconds('s'),
 		strftime.WithMilliseconds('L'),
 		strftime.WithMicroseconds('µ'),
 	)
+	if err != nil {
+		a.Debugf(DebugMisc, "FancyFileName(%q) error %v", path, err)
+	} else {
+		a.Debugf(DebugMisc, "FancyFileName(%q) -> %q", path, newstr)
+	}
+	return newstr, err
 }
 
-// ClientPreamble returns a copy of the client preamble data
-// as three slices of strings, representing the initial data
-// to be sent, data after authentication, and data after
-// the client negotiation is complete. If the initialization
-// file has changed since we last read it, we read and parse
-// that data first, caching it for subsequent calls.
-//
-// This is not thread-safe.
-func (a *Application) ClientPreamble() ([]string, []string, []string, error) {
+// refreshClientPreamble updates the application's set of
+// preamble data lists. 
+func (a *Application) refreshClientPreamble() error {
 	if a.InitFile == "" {
-		return nil, nil, nil, nil
+		return nil
 	}
 
-	fileInfo, err := os.Stat(a.InitFile)
+	a.Debug(DebugInit, "acquiring a write lock on the preamble data")
+	a.clientPreamble.lock.Lock()
+	defer func() {
+		a.Debug(DebugInit, "releasing write lock on preamble data")
+		a.clientPreamble.lock.Unlock()
+	}()
+	a.Debug(DebugInit, "acquired write lock; proceeding")
+
+	f, err := os.Open(a.InitFile)
 	if err != nil {
-		return nil, nil, nil, err
+		return err
 	}
+	defer f.Close()
 
-	if a.clientPreamble.lastRead.IsZero() || fileInfo.ModTime().After(a.clientPreamble.lastRead) {
-		f, err := os.Open(a.InitFile)
-		if err != nil {
-			return nil, nil, nil, err
+	recordPattern := regexp.MustCompile("^(\\w+)\\s+({.*)")
+	continuationPattern := regexp.MustCompile("^\\s+")
+	endOfRecordPattern := regexp.MustCompile("^}")
+	commandPattern := regexp.MustCompile("^(\\w+)\\s*$")
+
+	a.clientPreamble.preamble = nil
+	a.clientPreamble.postAuth = nil
+	a.clientPreamble.postReady = nil
+	a.clientPreamble.syncData = false
+	currentPreamble := &a.clientPreamble.preamble
+
+	scanner := bufio.NewScanner(f)
+	outerScan:
+	for scanner.Scan() {
+	rescan:
+		if strings.TrimSpace(scanner.Text()) == "" {
+			continue
 		}
-		defer f.Close()
-
-		recordPattern := regexp.MustCompile("^(\\w+)\\s+({.*)")
-		continuationPattern := regexp.MustCompile("^\\s+")
-		endOfRecordPattern := regexp.MustCompile("^}")
-		commandPattern := regexp.MustCompile("^(\\w+)\\s*$")
-
-		a.clientPreamble.preamble = nil
-		a.clientPreamble.postAuth = nil
-		a.clientPreamble.postReady = nil
-		a.clientPreamble.syncData = false
-		currentPreamble := &a.clientPreamble.preamble
-
-		scanner := bufio.NewScanner(f)
-		outerScan:
-		for scanner.Scan() {
-		rescan:
-			if strings.TrimSpace(scanner.Text()) == "" {
-				continue
+		if strings.HasPrefix(scanner.Text(), "//") {
+			*currentPreamble = append(*currentPreamble, scanner.Text())
+			continue
+		} 
+		if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
+			// dataless command f[1]
+			switch f[1] {
+			case "AUTH":
+				currentPreamble = &a.clientPreamble.postAuth
+			case "READY":
+				currentPreamble = &a.clientPreamble.postReady
+			case "SYNC":
+				a.clientPreamble.syncData = true
+			default:
+				return fmt.Errorf("invalid command \"%v\" in init file %s", scanner.Text(), a.InitFile)
 			}
-			if strings.HasPrefix(scanner.Text(), "//") {
-				*currentPreamble = append(*currentPreamble, scanner.Text())
-				continue
-			} 
-			if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
-				// dataless command f[1]
-				switch f[1] {
-				case "AUTH":
-					currentPreamble = &a.clientPreamble.postAuth
-				case "READY":
-					currentPreamble = &a.clientPreamble.postReady
-				case "SYNC":
-					a.clientPreamble.syncData = true
-				default:
-					return nil, nil, nil, fmt.Errorf("invalid command \"%v\" in init file %s", scanner.Text(), a.InitFile)
-				}
-			} else if f := recordPattern.FindStringSubmatch(scanner.Text()); f != nil {
-				// start of record type f[1] with start of JSON string f[2]
-				// collect rest of string
-				var dataPacket strings.Builder
-				dataPacket.WriteString(f[2])
+		} else if f := recordPattern.FindStringSubmatch(scanner.Text()); f != nil {
+			// start of record type f[1] with start of JSON string f[2]
+			// collect rest of string
+			var dataPacket strings.Builder
+			dataPacket.WriteString(f[2])
 
-				for scanner.Scan() {
-					if continuationPattern.MatchString(scanner.Text()) {
+			for scanner.Scan() {
+				if continuationPattern.MatchString(scanner.Text()) {
+					dataPacket.WriteString(scanner.Text())
+				} else {
+					if endOfRecordPattern.MatchString(scanner.Text()) {
 						dataPacket.WriteString(scanner.Text())
+					}
+					if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+						return err
+					}
+					if !endOfRecordPattern.MatchString(scanner.Text()) {
+						// We already read into next record
+						goto rescan
 					} else {
-						if endOfRecordPattern.MatchString(scanner.Text()) {
-							dataPacket.WriteString(scanner.Text())
-						}
-						if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
-							return nil, nil, nil, err
-						}
-						if !endOfRecordPattern.MatchString(scanner.Text()) {
-							// We already read into next record
-							goto rescan
-						} else {
-							continue outerScan
-						}
+						continue outerScan
 					}
 				}
-				// We reached EOF while scanning with a command in progress
-				if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
-					return nil, nil, nil, err
-				}
-				break
 			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			return nil, nil, nil, err
+			// We reached EOF while scanning with a command in progress
+			if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+				return err
+			}
+			break
 		}
 	}
 
-	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, nil
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	if (a.DebugLevel & DebugInit) != 0 {
+			a.Debugf(DebugInit, "client initial commands from %v", a.InitFile)
+			a.Debugf(DebugInit, "client sync: %v", a.clientPreamble.syncData)
+
+			for i, p := range a.clientPreamble.preamble {
+				a.Debugf(DebugInit, "client preamble #%d: %s", i, p)
+			}
+			for i, p := range a.clientPreamble.postAuth {
+				a.Debugf(DebugInit, "client post-auth #%d: %s", i, p)
+			}
+			for i, p := range a.clientPreamble.postReady {
+				a.Debugf(DebugInit, "client post-ready #%d: %s", i, p)
+			}
+		}
+
+	return nil
 }
 
 func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
@@ -559,3 +642,94 @@ func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
 	return err
 }
 
+func (a *Application) newClientAuthenticator(user string) (*auth.Authenticator, error) {
+	if a.PasswordFile == "" {
+		return nil, nil
+	}
+
+	a.Debug(DebugAuth, "acquiring a read lock on the password data")
+	a.clientAuth.lock.RLock()
+	defer func() {
+		a.Debug(DebugAuth, "releasing read lock on password data")
+		a.clientAuth.lock.RUnlock()
+	}()
+	a.Debug(DebugAuth, "acquired read lock; proceeding")
+
+	cauth := &auth.Authenticator {
+		Secret: a.clientAuth.groupPassword,
+		GmSecret: a.clientAuth.gmPassword,
+	}
+
+	if user != "" {
+		personalPass, ok := a.clientAuth.personalPasswords[user]
+		if ok {
+			cauth.SetSecret(personalPass)
+			a.Debugf(DebugAuth, "using personal password for %s", user)
+		} else {
+			a.Debugf(DebugAuth, "no personal password found for %s, using group password", user)
+		}
+	}
+
+	return cauth, nil
+}
+
+
+func (a *Application) refreshAuthenticator() error {
+	if a.PasswordFile == "" {
+		return nil
+	}
+
+	a.Debug(DebugInit, "acquiring a write lock on the password data")
+	a.clientAuth.lock.Lock()
+	defer func() {
+		a.Debug(DebugInit, "releasing write lock on password data")
+		a.clientAuth.lock.Unlock()
+	}()
+	a.Debug(DebugInit, "acquired write lock; proceeding")
+
+	fp, err := os.Open(a.PasswordFile)
+	if err != nil {
+		a.Logf("unable to open password file \"%s\": %v", a.PasswordFile, err)
+		return err
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			a.Logf("error closing %s: %v", a.PasswordFile, err)
+		}
+	}()
+
+	a.clientAuth.groupPassword = []byte{}
+	a.clientAuth.gmPassword = []byte{}
+	a.clientAuth.personalPasswords = make(map[string][]byte)
+
+	scanner := bufio.NewScanner(fp)
+	if scanner.Scan() {
+		// first line is the group password
+		a.clientAuth.groupPassword = scanner.Bytes()
+		a.Debug(DebugInit, "set group password")
+		if scanner.Scan() {
+			// next line, if any, is the gm-specific password
+			a.clientAuth.gmPassword = scanner.Bytes()
+			a.Debug(DebugInit, "set GM password")
+
+			// following lines are <user>:<password> for individual passwords
+			line := 3
+			for scanner.Scan() {
+				pp := strings.SplitN(scanner.Text(), ":", 2)
+				if len(pp) != 2 {
+					a.Logf("WARNING: %s, line %d: ignoring personal password: missing delimiter", a.PasswordFile, line)
+				} else {
+					a.clientAuth.personalPasswords[pp[0]] = []byte(pp[1])
+					a.Debugf(DebugInit, "set personal password for %s", pp[0])
+				}
+				line++
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		a.Logf("error reading %s: %v", a.PasswordFile, err)
+		return err
+	}
+
+	return nil
+}

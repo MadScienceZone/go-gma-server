@@ -329,7 +329,8 @@ server.
 '\" <<desc>>
 .TP 8
 .B HUP
-This signal causes the server to save state if needed and shut down gracefully.
+'\"This signal causes the server to save state if needed and shut down gracefully.
+Shuts down the server gracefully.
 No new connections will be accepted, but the server will wait for existing ones
 to terminate before shutting down.
 .TP
@@ -338,11 +339,11 @@ Emergency shutdown. Just like the graceful shutdown caused by a HUP signal,
 but forces all existing connections to immediately terminate.
 .TP
 .B USR1
-This signal causes the server to dump a human-readable description of the current game state
-on its standard output.
-.TP
-.B USR2
-This signal causes the server to save its current state if needed.
+Reload password and initialization files. Send this signal after modifying
+either of these files when the server is already running.
+'\".TP
+'\".B USR2
+'\"This signal causes the server to save its current state if needed.
 '\" <</>>
 .SH "SEE ALSO"
 .LP
