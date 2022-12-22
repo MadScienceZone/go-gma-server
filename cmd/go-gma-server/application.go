@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/MadScienceZone/go-gma/v5/mapper"
 	"github.com/lestrrat-go/strftime"
 )
 
@@ -32,6 +37,14 @@ type Application struct {
 	// the initial client command set.
 	InitFile string
 
+	clientPreamble struct {
+		syncData bool
+		lastRead time.Time
+		preamble []string
+		postAuth []string
+		postReady []string
+	}
+
 	// If not empty, we require authentication, with passwords taken
 	// from this file.
 	PasswordFile string
@@ -41,6 +54,7 @@ type Application struct {
 
 	// Pathname for database file.
 	DatabaseName string
+
 }
 
 //
@@ -120,6 +134,14 @@ func (a *Application) GetAppOptions() error {
 	if *initFile != "" {
 		a.InitFile = *initFile
 		a.Logf("reading client initial command set from \"%s\"", a.InitFile)
+		p1, p2, p3, e := a.ClientPreamble()
+		if e != nil {
+			a.Logf("error reading init file \"%s\": %v", a.InitFile, e)
+			os.Exit(1)
+		}
+		a.Logf("preamble: %v", p1)
+		a.Logf("preamble (post-auth): %v", p2)
+		a.Logf("preamble: (post-ready): %v", p3)
 	}
 
 	if *passFile != "" {
@@ -227,5 +249,313 @@ func (a *Application) FancyFileName(path string) (string, error) {
 		strftime.WithMilliseconds('L'),
 		strftime.WithMicroseconds('µ'),
 	)
-
 }
+
+// ClientPreamble returns a copy of the client preamble data
+// as three slices of strings, representing the initial data
+// to be sent, data after authentication, and data after
+// the client negotiation is complete. If the initialization
+// file has changed since we last read it, we read and parse
+// that data first, caching it for subsequent calls.
+//
+// This is not thread-safe.
+func (a *Application) ClientPreamble() ([]string, []string, []string, error) {
+	if a.InitFile == "" {
+		return nil, nil, nil, nil
+	}
+
+	fileInfo, err := os.Stat(a.InitFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if a.clientPreamble.lastRead.IsZero() || fileInfo.ModTime().After(a.clientPreamble.lastRead) {
+		f, err := os.Open(a.InitFile)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		defer f.Close()
+
+		recordPattern := regexp.MustCompile("^(\\w+)\\s+({.*)")
+		continuationPattern := regexp.MustCompile("^\\s+")
+		endOfRecordPattern := regexp.MustCompile("^}")
+		commandPattern := regexp.MustCompile("^(\\w+)\\s*$")
+
+		a.clientPreamble.preamble = nil
+		a.clientPreamble.postAuth = nil
+		a.clientPreamble.postReady = nil
+		a.clientPreamble.syncData = false
+		currentPreamble := &a.clientPreamble.preamble
+
+		scanner := bufio.NewScanner(f)
+		outerScan:
+		for scanner.Scan() {
+		rescan:
+			if strings.TrimSpace(scanner.Text()) == "" {
+				continue
+			}
+			if strings.HasPrefix(scanner.Text(), "//") {
+				*currentPreamble = append(*currentPreamble, scanner.Text())
+				continue
+			} 
+			if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
+				// dataless command f[1]
+				switch f[1] {
+				case "AUTH":
+					currentPreamble = &a.clientPreamble.postAuth
+				case "READY":
+					currentPreamble = &a.clientPreamble.postReady
+				case "SYNC":
+					a.clientPreamble.syncData = true
+				default:
+					return nil, nil, nil, fmt.Errorf("invalid command \"%v\" in init file %s", scanner.Text(), a.InitFile)
+				}
+			} else if f := recordPattern.FindStringSubmatch(scanner.Text()); f != nil {
+				// start of record type f[1] with start of JSON string f[2]
+				// collect rest of string
+				var dataPacket strings.Builder
+				dataPacket.WriteString(f[2])
+
+				for scanner.Scan() {
+					if continuationPattern.MatchString(scanner.Text()) {
+						dataPacket.WriteString(scanner.Text())
+					} else {
+						if endOfRecordPattern.MatchString(scanner.Text()) {
+							dataPacket.WriteString(scanner.Text())
+						}
+						if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+							return nil, nil, nil, err
+						}
+						if !endOfRecordPattern.MatchString(scanner.Text()) {
+							// We already read into next record
+							goto rescan
+						} else {
+							continue outerScan
+						}
+					}
+				}
+				// We reached EOF while scanning with a command in progress
+				if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+					return nil, nil, nil, err
+				}
+				break
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, nil
+}
+
+func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
+	var b []byte
+	var err error
+
+	s := []byte(src.String())
+
+	switch cmd {
+	case "AI":
+		var data mapper.AddImageMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "AI?":
+		var data mapper.QueryImageMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "AV":
+		var data mapper.AdjustViewMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "CC":
+		var data mapper.ClearChatMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "CLR":
+		var data mapper.ClearMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "CLR@":
+		var data mapper.ClearFromMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "CO":
+		var data mapper.CombatModeMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "CS":
+		var data mapper.UpdateClockMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "DD=":
+		var data mapper.UpdateDicePresetsMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "DSM":
+		var data mapper.UpdateStatusMarkerMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "I":
+		var data mapper.UpdateTurnMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "IL":
+		var data mapper.UpdateInitiativeMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "L":
+		var data mapper.LoadFromMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-ARC":
+		var data mapper.LoadArcObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-CIRC":
+		var data mapper.LoadCircleObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-LINE":
+		var data mapper.LoadLineObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-POLY":
+		var data mapper.LoadPolygonObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-RECT":
+		var data mapper.LoadRectangleObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-SAOE":
+		var data mapper.LoadSpellAreaOfEffectObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-TEXT":
+		var data mapper.LoadTextObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "LS-TILE":
+		var data mapper.LoadTileObjectMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "MARK":
+		var data mapper.MarkMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "OA":
+		var data mapper.UpdateObjAttributesMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "OA+":
+		var data mapper.AddObjAttributesMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "OA-":
+		var data mapper.RemoveObjAttributesMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "PROGRESS":
+		var data mapper.UpdateProgressMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "AC", "PS":
+		var data mapper.PlaceSomeoneMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "ROLL":
+		var data mapper.RollResultMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "TB":
+		var data mapper.ToolbarMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "TO":
+		var data mapper.ChatMessageMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "UPDATES":
+		var data mapper.UpdateVersionsMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+	
+	case "WORLD":
+		var data mapper.WorldMessagePayload
+		if err = json.Unmarshal(s, &data); err == nil {
+			b, err = json.Marshal(data)
+		}
+
+	default:
+		return fmt.Errorf("invalid command %v in initialization file", cmd)
+	}
+
+	if err == nil {
+		*dst = append(*dst, fmt.Sprintf("%s %s", cmd, string(b)))
+	}
+	return err
+}
+
