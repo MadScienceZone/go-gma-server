@@ -30,6 +30,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -56,22 +57,7 @@ const GMAVersionNumber = "4.0.0" // @@##@@
 func eventMonitor(sig_chan chan os.Signal, stop_chan chan int, ms *mapservice.MapService, saveInterval int) {
 */
 func eventMonitor(sigChan chan os.Signal, stopChan chan int, app *Application) {
-//	report_interval := 1
-//	var save_signal *time.Ticker
-
-//	if saveInterval <= 0 {
-//		save_signal = time.NewTicker(1 * time.Minute)
-//		save_signal.Stop()
-//		log.Printf("Save interval specified as %d; periodic saves DISABLED", saveInterval)
-//	} else {
-//		save_signal = time.NewTicker(time.Duration(saveInterval) * time.Minute)
-//	}
 	ping_signal := time.NewTicker(1 * time.Minute)
-
-//	if ms.Database == nil {
-//		log.Printf("No database open; periodic saves DISABLED")
-//		save_signal.Stop()
-//	}
 
 	for {
 		select {
@@ -93,59 +79,44 @@ func eventMonitor(sigChan chan os.Signal, stopChan chan int, app *Application) {
 					app.Log("WARNING: client credentials may be incomplete or incorrect now")
 				}
 
-//				ms.DumpState()
+				//				ms.DumpState()
 
 			case syscall.SIGUSR2:
-				app.Debug(DebugEvents, "SIGUSR2")
-//				log.Printf("**SAVE** due to signal")
-//				if err := ms.SaveState(); err != nil {
-//					log.Printf("Error saving game state: %v", err)
-//				}
+				app.Debug(DebugEvents, "SIGUSR2 (currently not used by the server)")
 
 			case syscall.SIGINT:
 				app.Debug(DebugEvents, "SIGINT; sending STOP signal to application")
 				stopChan <- 1
 				// Make a quick effort to shut down as fast as possible
 				// by terminating all client connections immediately.
-//				log.Printf("EMERGENCY SHUTDOWN INITIATED")
-//				ms.AcceptIncoming = false
-//				for i, client := range ms.Clients {
-//					log.Printf("Terminating client %v from %s", i, client.ClientAddr)
-//					client.Connection.Close()
-//				}
-//				stop_chan <- 1
+				//				log.Printf("EMERGENCY SHUTDOWN INITIATED")
+				//				ms.AcceptIncoming = false
+				//				for i, client := range ms.Clients {
+				//					log.Printf("Terminating client %v from %s", i, client.ClientAddr)
+				//					client.Connection.Close()
+				//				}
 			}
-
-//		case t := <-save_signal.C:
-//			// suppress messages and unnecessary saves
-//			// if we're idling
-//			if ms.SaveNeeded || report_interval <= 1 {
-//				log.Printf("***SAVE*** due to timer %v", t)
-//				if err := ms.SaveState(); err != nil {
-//					log.Printf("Error saving game state: %v", err)
-//				}
-//			}
 
 		case <-ping_signal.C:
 			app.Debug(DebugEvents, "ping timer expired")
-//			any_connections := ms.PingAll()
-//			if any_connections {
-//				if report_interval > 1 {
-//					report_interval = 1
-//					log.Printf("Activity detected; reset ping timer to 1 minute")
-//					ping_signal.Reset(1 * time.Minute)
-//				}
-//			} else {
-//				new_interval := report_interval * 2
-//				if new_interval > 60 {
-//					new_interval = 60
-//				}
-//				if new_interval != report_interval {
-//					report_interval = new_interval
-//					log.Printf("No connections; backing off ping timer to %d minutes", new_interval)
-//					ping_signal.Reset(time.Duration(new_interval) * time.Minute)
-//				}
-//			}
+			//			any_connections := ms.PingAll()
+			//			if any_connections {
+			//				if report_interval > 1 {
+			//					report_interval = 1
+			//					log.Printf("Activity detected; reset ping timer to 1 minute")
+			//					ping_signal.Reset(1 * time.Minute)
+			//				}
+			//			} else {
+			//				new_interval := report_interval * 2
+			//				if new_interval > 60 {
+			//					new_interval = 60
+			//				}
+			//				if new_interval != report_interval {
+			//					report_interval = new_interval
+			//					log.Printf("No connections; backing off ping timer to %d minutes", new_interval)
+			//					ping_signal.Reset(time.Duration(new_interval) * time.Minute)
+			//				}
+			//			}
 		}
 	}
 }
@@ -190,16 +161,16 @@ func main() {
 			nrApp.Shutdown(30 * time.Second)
 		}()
 	}
-/*
-	for {
-		func() {
-			if InstrumentCode {
-				defer nrApp.StartTransaction("testing").End()
-			}
-			time.Sleep(10 * time.Second)
-		}()
-	}
-*/
+	/*
+		for {
+			func() {
+				if InstrumentCode {
+					defer nrApp.StartTransaction("testing").End()
+				}
+				time.Sleep(10 * time.Second)
+			}()
+		}
+	*/
 
 	if err := app.dbOpen(); err != nil {
 		app.Logf("unable to open database: %v", err)
@@ -214,7 +185,6 @@ func main() {
 		// do stuff
 	*/
 
-
 	// start listening to incoming port
 	incoming, err := net.Listen("tcp", app.Endpoint)
 	if err != nil {
@@ -222,43 +192,54 @@ func main() {
 		os.Exit(2)
 	}
 	app.Logf("Listening on %s", app.Endpoint)
-	defer incoming.Close()
+	defer func() {
+		if err := incoming.Close(); err != nil {
+			app.Logf("failure closing incoming socket: %v", err)
+		}
+	}()
 
 	sigChannel := make(chan os.Signal, 1)
 	stopChannel := make(chan int, 1)
 	signal.Notify(sigChannel, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGINT)
 
+	//expiredClients := make(chan *ClientConnection, 16)
 	go eventMonitor(sigChannel, stopChannel, &app)
+	go acceptIncomingConnections(incoming, &app)
+
 	<-stopChannel
 	app.Log("received STOP signal; shutting down")
 	app.Log("server shut down")
+}
 
-/*
-		// signal handler
+func acceptIncomingConnections(incoming net.Listener, app *Application) {
+	for {
+		app.Debug(DebugIO, "waiting for next incoming client")
+		client, err := incoming.Accept()
+		if err != nil {
+			app.Logf("incoming connection: %v", err)
+			continue
+		}
+		app.Debugf(DebugIO, "client connected from %v", client.RemoteAddr())
 
-		ms := mapservice.MapService{
-			IncomingListener:  incoming,
-			Database:          sqldb,
-			PlayerGroupPass:   groupPassword,
-			GmPass:            gmPassword,
-			PersonalPasswords: personalPasswords,
-			Clients:           make(map[string]*mapservice.MapClient),
-			InitFile:          *initfile,
-			GreetFile:         *greetfile,
-			EventHistory:      make(map[string]*mapservice.MapEvent),
-			ImageList:         make(map[string]string),
-			StopChannel:       stop_channel,
+		auth, err := app.newClientAuthenticator("")
+		if err != nil {
+			app.Logf("unable to set up client authentication: %v", err)
+			client.Close()
+			continue
 		}
-		go ms.Run()
-		go eventMonitor(sig_channel, stop_channel, &ms, *saveint)
-		<-stop_channel
-		log.Printf("Received STOP signal; shutting down")
-		if err = ms.SaveState(); err != nil {
-			log.Printf("Error trying to save game state before exit: %v", err)
+
+		newConnection, err := mapper.NewClientConnection(client,
+			mapper.WithServer(app),
+			mapper.WithClientDebuggingLevel(mapper.DebugAll),
+			mapper.WithClientAuthenticator(auth),
+		)
+		if err != nil {
+			app.Logf("unable to initialize client session: %v", err)
+			client.Close()
+			continue
 		}
-		ms.Shutdown()
-		log.Printf("server shut down")
-	*/
+		go newConnection.ServeToClient(context.Background())
+	}
 }
 
 // @[00]@| GMA 4.2.2

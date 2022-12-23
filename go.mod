@@ -22,6 +22,6 @@ require (
 
 require (
 	github.com/MadScienceZone/go-gma/v5 v5.0.0
-	github.com/lestrrat-go/strftime v1.0.6
+	github.com/lestrrat-go/strftime v1.0.6 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 )

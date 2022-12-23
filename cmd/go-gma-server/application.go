@@ -9,14 +9,12 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/MadScienceZone/go-gma/v5/auth"
 	"github.com/MadScienceZone/go-gma/v5/mapper"
-	"github.com/lestrrat-go/strftime"
+	"github.com/MadScienceZone/go-gma/v5/util"
 )
 
 type DebugFlags uint64
@@ -24,9 +22,10 @@ type DebugFlags uint64
 const (
 	DebugAuth DebugFlags = 1 << iota
 	DebugEvents
+	DebugIO
 	DebugInit
 	DebugMisc
-	DebugAll = 0xffffffff
+	DebugAll DebugFlags = 0xffffffff
 )
 
 func DebugFlagNames(flags DebugFlags) string {
@@ -38,12 +37,13 @@ func DebugFlagNames(flags DebugFlags) string {
 	}
 
 	var list []string
-	for _, f := range []struct{
+	for _, f := range []struct {
 		bits DebugFlags
 		name string
 	}{
 		{bits: DebugAuth, name: "auth"},
 		{bits: DebugEvents, name: "events"},
+		{bits: DebugIO, name: "i/o"},
 		{bits: DebugInit, name: "init"},
 		{bits: DebugMisc, name: "misc"},
 	} {
@@ -80,25 +80,22 @@ type Application struct {
 		preamble  []string
 		postAuth  []string
 		postReady []string
-		lock	  sync.RWMutex
+		lock      sync.RWMutex
 	}
 
 	// If not empty, we require authentication, with passwords taken
 	// from this file.
 	PasswordFile string
-	clientAuth struct {
+	clientAuth   struct {
 		groupPassword     []byte
 		gmPassword        []byte
 		personalPasswords map[string][]byte
 		lock              sync.RWMutex
 	}
 
-	// How often to save internal state to disk.
-	//SaveInterval time.Duration
-
 	// Pathname for database file.
 	DatabaseName string
-	sqldb *sql.DB
+	sqldb        *sql.DB
 }
 
 //
@@ -107,7 +104,7 @@ type Application struct {
 // its arguments.
 //
 func (a *Application) Debug(level DebugFlags, message ...any) {
-	if a != nil && a.Logger != nil && (a.DebugLevel & level) != 0 {
+	if a != nil && a.Logger != nil && (a.DebugLevel&level) != 0 {
 		var dmessage []any
 		dmessage = append(dmessage, DebugFlagNames(level))
 		dmessage = append(dmessage, message...)
@@ -142,7 +139,7 @@ func (a *Application) Logf(format string, args ...any) {
 // list just like fmt.Printf does.
 //
 func (a *Application) Debugf(level DebugFlags, format string, args ...any) {
-	if a != nil && a.Logger != nil && (a.DebugLevel & level) != 0 {
+	if a != nil && a.Logger != nil && (a.DebugLevel&level) != 0 {
 		a.Logger.Printf(DebugFlagNames(level)+" "+format, args...)
 	}
 }
@@ -156,7 +153,7 @@ func (a *Application) GetAppOptions() error {
 	var logFile = flag.String("log-file", "-", "Write log to given pathname (stderr if '-'); special % tokens allowed in path")
 	var passFile = flag.String("password-file", "", "Require authentication with named password file")
 	var endPoint = flag.String("endpoint", ":2323", "Incoming connection endpoint ([host]:port)")
-//	var saveInterval = flag.String("save-interval", "10m", "Save internal state this often")
+	//	var saveInterval = flag.String("save-interval", "10m", "Save internal state this often")
 	var sqlDbName = flag.String("sqlite", "", "Specify filename for sqlite database to use")
 	var debugFlags = flag.String("debug", "", "List the debugging trace types to enable")
 	flag.Parse()
@@ -164,12 +161,20 @@ func (a *Application) GetAppOptions() error {
 	if *debugFlags != "" {
 		for _, flag := range strings.Split(*debugFlags, ",") {
 			switch flag {
-			case "none": a.DebugLevel = 0
-			case "all":  a.DebugLevel = DebugAll
-			case "auth":  a.DebugLevel = DebugAuth
-			case "events":  a.DebugLevel = DebugEvents
-			case "init": a.DebugLevel |= DebugInit
-			case "misc": a.DebugLevel |= DebugMisc
+			case "none":
+				a.DebugLevel = 0
+			case "all":
+				a.DebugLevel = DebugAll
+			case "auth":
+				a.DebugLevel = DebugAuth
+			case "events":
+				a.DebugLevel = DebugEvents
+			case "I/O", "i/o", "io":
+				a.DebugLevel = DebugIO
+			case "init":
+				a.DebugLevel |= DebugInit
+			case "misc":
+				a.DebugLevel |= DebugMisc
 			default:
 				return fmt.Errorf("No such -debug flag: \"%s\"", flag)
 			}
@@ -182,7 +187,7 @@ func (a *Application) GetAppOptions() error {
 	} else {
 		a.Logger = log.Default()
 		if *logFile != "-" {
-			path, err := a.FancyFileName(*logFile)
+			path, err := util.FancyFileName(*logFile, nil)
 			if err != nil {
 				return fmt.Errorf("unable to understand log file path \"%s\": %v", *logFile, err)
 			}
@@ -224,17 +229,17 @@ func (a *Application) GetAppOptions() error {
 	}
 
 	/*
-	if *saveInterval == "" {
-		a.SaveInterval = 10 * time.Minute
-		a.Logf("defaulting state save interval to 10 minutes")
-	} else {
-		d, err := time.ParseDuration(*saveInterval)
-		if err != nil {
-			return fmt.Errorf("invalid save-time interval: %v", err)
+		if *saveInterval == "" {
+			a.SaveInterval = 10 * time.Minute
+			a.Logf("defaulting state save interval to 10 minutes")
+		} else {
+			d, err := time.ParseDuration(*saveInterval)
+			if err != nil {
+				return fmt.Errorf("invalid save-time interval: %v", err)
+			}
+			a.SaveInterval = d
+			a.Logf("saving state to disk every %v", a.SaveInterval)
 		}
-		a.SaveInterval = d
-		a.Logf("saving state to disk every %v", a.SaveInterval)
-	}
 	*/
 
 	if *sqlDbName == "" {
@@ -246,86 +251,8 @@ func (a *Application) GetAppOptions() error {
 	return nil
 }
 
-//
-// FancyFileName expands tokens found in the path string to allow the user
-// to specify dynamically-named files at runtime. If there's a problem with
-// the formatting, an error is returned along with the original path.
-//
-// The tokens which may appear in the path include the following
-// (note that all of these are modified as appropriate to the locale's
-// national conventions and language):
-//    %A   full weekday name
-//    %a   abbreviated weekday name
-//    %B   full month name
-//    %b   abbreviated month name
-//    %C   zero-padded two-digit year 00-99
-//    %c   time and date
-//    %d   day of month as number 01-31 (zero padded)
-//    %e   day of month as number  1-31 (space padded)
-//    %F   == %Y-%m-%d
-//    %H   hour as number 00-23 (zero padded)
-//    %h   abbreviated month name (same as %b)
-//    %I   hour as number 01-12 (zero padded)
-//    %j   day of year as number 001-366
-//    %k   hour as number  0-23 (space padded)
-//    %L   milliseconds as number 000-999
-//    %l   hour as number  1-12 (space padded)
-//    %M   minute as number 00-59
-//    %m   month as number 01-12
-//    %P   process ID
-//    %p   AM or PM
-//    %R   == %H:%M
-//    %r   == %I:%M:%S %p
-//    %S   second as number 00-60
-//    %s   Unix timestamp as a number
-//    %T   == %H:%M:%S
-//    %U   week of the year as number 00-53 (Sunday as first day of week)
-//    %u   weekday as number (1=Monday .. 7=Sunday)
-//    %V   week of the year as number 00-53 (Monday as first day of week)
-//    %v   == %e-%b-%Y
-//    %W   week of the year as number 00-53 (Monday as first day of week)
-//    %w   weekday as number (0=Sunday .. 6=Saturday)
-//    %X   time
-//    %x   date
-//    %Y   full year
-//    %y   two-digit year (00-99)
-//    %Z   time zone name
-//    %z   time zone offset from UTC
-//    %µ   microseconds as number 000-999
-//    %%   literal % character
-//
-func (a *Application) FancyFileName(path string) (string, error) {
-	ss := strftime.NewSpecificationSet()
-
-	if err := ss.Delete('n'); err != nil {
-		return path, err
-	}
-	if err := ss.Delete('t'); err != nil {
-		return path, err
-	}
-	if err := ss.Delete('D'); err != nil {
-		return path, err
-	}
-	if err := ss.Set('P', strftime.Verbatim(strconv.Itoa(os.Getpid()))); err != nil {
-		return path, err
-	}
-
-	newstr, err := strftime.Format(path, time.Now(),
-		strftime.WithSpecificationSet(ss),
-		strftime.WithUnixSeconds('s'),
-		strftime.WithMilliseconds('L'),
-		strftime.WithMicroseconds('µ'),
-	)
-	if err != nil {
-		a.Debugf(DebugMisc, "FancyFileName(%q) error %v", path, err)
-	} else {
-		a.Debugf(DebugMisc, "FancyFileName(%q) -> %q", path, newstr)
-	}
-	return newstr, err
-}
-
 // refreshClientPreamble updates the application's set of
-// preamble data lists. 
+// preamble data lists.
 func (a *Application) refreshClientPreamble() error {
 	if a.InitFile == "" {
 		return nil
@@ -357,7 +284,7 @@ func (a *Application) refreshClientPreamble() error {
 	currentPreamble := &a.clientPreamble.preamble
 
 	scanner := bufio.NewScanner(f)
-	outerScan:
+outerScan:
 	for scanner.Scan() {
 	rescan:
 		if strings.TrimSpace(scanner.Text()) == "" {
@@ -366,7 +293,7 @@ func (a *Application) refreshClientPreamble() error {
 		if strings.HasPrefix(scanner.Text(), "//") {
 			*currentPreamble = append(*currentPreamble, scanner.Text())
 			continue
-		} 
+		}
 		if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
 			// dataless command f[1]
 			switch f[1] {
@@ -416,19 +343,19 @@ func (a *Application) refreshClientPreamble() error {
 	}
 
 	if (a.DebugLevel & DebugInit) != 0 {
-			a.Debugf(DebugInit, "client initial commands from %v", a.InitFile)
-			a.Debugf(DebugInit, "client sync: %v", a.clientPreamble.syncData)
+		a.Debugf(DebugInit, "client initial commands from %v", a.InitFile)
+		a.Debugf(DebugInit, "client sync: %v", a.clientPreamble.syncData)
 
-			for i, p := range a.clientPreamble.preamble {
-				a.Debugf(DebugInit, "client preamble #%d: %s", i, p)
-			}
-			for i, p := range a.clientPreamble.postAuth {
-				a.Debugf(DebugInit, "client post-auth #%d: %s", i, p)
-			}
-			for i, p := range a.clientPreamble.postReady {
-				a.Debugf(DebugInit, "client post-ready #%d: %s", i, p)
-			}
+		for i, p := range a.clientPreamble.preamble {
+			a.Debugf(DebugInit, "client preamble #%d: %s", i, p)
 		}
+		for i, p := range a.clientPreamble.postAuth {
+			a.Debugf(DebugInit, "client post-auth #%d: %s", i, p)
+		}
+		for i, p := range a.clientPreamble.postReady {
+			a.Debugf(DebugInit, "client post-ready #%d: %s", i, p)
+		}
+	}
 
 	return nil
 }
@@ -445,187 +372,187 @@ func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "AI?":
 		var data mapper.QueryImageMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "AV":
 		var data mapper.AdjustViewMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "CC":
 		var data mapper.ClearChatMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "CLR":
 		var data mapper.ClearMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "CLR@":
 		var data mapper.ClearFromMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "CO":
 		var data mapper.CombatModeMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "CS":
 		var data mapper.UpdateClockMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "DD=":
 		var data mapper.UpdateDicePresetsMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "DSM":
 		var data mapper.UpdateStatusMarkerMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "I":
 		var data mapper.UpdateTurnMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "IL":
 		var data mapper.UpdateInitiativeMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "L":
 		var data mapper.LoadFromMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-ARC":
 		var data mapper.LoadArcObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-CIRC":
 		var data mapper.LoadCircleObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-LINE":
 		var data mapper.LoadLineObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-POLY":
 		var data mapper.LoadPolygonObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-RECT":
 		var data mapper.LoadRectangleObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-SAOE":
 		var data mapper.LoadSpellAreaOfEffectObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-TEXT":
 		var data mapper.LoadTextObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "LS-TILE":
 		var data mapper.LoadTileObjectMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "MARK":
 		var data mapper.MarkMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "OA":
 		var data mapper.UpdateObjAttributesMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "OA+":
 		var data mapper.AddObjAttributesMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "OA-":
 		var data mapper.RemoveObjAttributesMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "PROGRESS":
 		var data mapper.UpdateProgressMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "AC", "PS":
 		var data mapper.PlaceSomeoneMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "ROLL":
 		var data mapper.RollResultMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "TB":
 		var data mapper.ToolbarMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "TO":
 		var data mapper.ChatMessageMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "UPDATES":
 		var data mapper.UpdateVersionsMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
 			b, err = json.Marshal(data)
 		}
-	
+
 	case "WORLD":
 		var data mapper.WorldMessagePayload
 		if err = json.Unmarshal(s, &data); err == nil {
@@ -642,6 +569,21 @@ func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
 	return err
 }
 
+func (a *Application) GetPersonalCredentials(user string) []byte {
+	a.Debug(DebugAuth, "acquiring a read lock on the password data")
+	a.clientAuth.lock.RLock()
+	defer func() {
+		a.Debug(DebugAuth, "releasing read lock on password data")
+		a.clientAuth.lock.RUnlock()
+	}()
+	a.Debug(DebugAuth, "acquired read lock; proceeding")
+	secret, ok := a.clientAuth.personalPasswords[user]
+	if !ok {
+		return nil
+	}
+	return secret
+}
+
 func (a *Application) newClientAuthenticator(user string) (*auth.Authenticator, error) {
 	if a.PasswordFile == "" {
 		return nil, nil
@@ -655,8 +597,8 @@ func (a *Application) newClientAuthenticator(user string) (*auth.Authenticator, 
 	}()
 	a.Debug(DebugAuth, "acquired read lock; proceeding")
 
-	cauth := &auth.Authenticator {
-		Secret: a.clientAuth.groupPassword,
+	cauth := &auth.Authenticator{
+		Secret:   a.clientAuth.groupPassword,
 		GmSecret: a.clientAuth.gmPassword,
 	}
 
@@ -672,7 +614,6 @@ func (a *Application) newClientAuthenticator(user string) (*auth.Authenticator, 
 
 	return cauth, nil
 }
-
 
 func (a *Application) refreshAuthenticator() error {
 	if a.PasswordFile == "" {
@@ -732,4 +673,19 @@ func (a *Application) refreshAuthenticator() error {
 	}
 
 	return nil
+}
+
+func (a *Application) GetPreamble() ([]string, []string, []string, bool) {
+	if a == nil {
+		return nil, nil, nil, false
+	}
+	a.Debug(DebugIO, "acquiring read lock on preamble data")
+	a.clientPreamble.lock.RLock()
+	a.Debug(DebugIO, "read lock granted; continuing")
+	defer func() {
+		a.Debug(DebugIO, "releasing read lock on preamble data")
+		a.clientPreamble.lock.RUnlock()
+	}()
+
+	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, a.clientPreamble.syncData
 }
