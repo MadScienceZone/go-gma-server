@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"os"
 
+	"github.com/MadScienceZone/go-gma/v5/mapper"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -89,19 +90,51 @@ func (a *Application) dbClose() error {
 	return a.sqldb.Close()
 }
 
-func (a *Application) StoreImageData(imageName string, zoom float64, isLocal bool, serverID string) error {
-	result, err := a.sqldb.Exec(`REPLACE INTO images (name, zoom, location, islocal) VALUES (?, ?, ?, ?);`, imageName, zoom, serverID, isLocal)
+func (a *Application) StoreImageData(imageName string, img mapper.ImageInstance) error {
+	result, err := a.sqldb.Exec(`REPLACE INTO images (name, zoom, location, islocal) VALUES (?, ?, ?, ?);`, imageName, img.Zoom, img.File, img.IsLocalFile)
 	if err != nil {
-		a.Logf(DebugDB, "error storing image record \"%s\"@%v local=%v, ID=%v: %v", imageName, zoom, isLocal, serverID, err)
+		a.Logf("error storing image record \"%s\"@%v local=%v, ID=%v: %v", imageName, img.Zoom, img.IsLocalFile, img.File, err)
 		return err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, (unable to examine results: %v)", imageName, zoom, isLocal, serverID, err)
+		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, (unable to examine results: %v)", imageName, img.Zoom, img.IsLocalFile, img.File, err)
 	} else {
-		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, rows affected=%d", imageName, zoom, isLocal, serverID, affected)
+		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, rows affected=%d", imageName, img.Zoom, img.IsLocalFile, img.File, affected)
 	}
 	return nil
+}
+
+func (a *Application) QueryImageData(img mapper.ImageDefinition) (mapper.ImageDefinition, error) {
+	var resultSet mapper.ImageDefinition
+
+	a.Debugf(DebugDB, "query of image \"%s\"", img.Name)
+	rows, err := a.sqldb.Query(`SELECT zoom, location, islocal FROM images WHERE name=?`, img.Name)
+	if err != nil {
+		a.Logf("error retrieving image data for \"%s\": %v", img.Name, err)
+		return resultSet, err
+	}
+	defer rows.Close()
+
+	resultSet.Name = img.Name
+	for rows.Next() {
+		var instance mapper.ImageInstance
+		var isLocal int
+
+		if err := rows.Scan(&instance.Zoom, &instance.File, &isLocal); err != nil {
+			a.Logf("error scanning row of image data: %v", err)
+			return resultSet, err
+		}
+		if isLocal != 0 {
+			instance.IsLocalFile = true
+		}
+		resultSet.Sizes = append(resultSet.Sizes, instance)
+		a.Debugf(DebugDB, "result: \"%s\"@%v from \"%s\" (local=%v)", img.Name, instance.Zoom, instance.File, instance.IsLocalFile)
+	}
+	if err := rows.Err(); err != nil {
+		a.Logf("error retrieving rows of image data: %v", err)
+	}
+	return resultSet, err
 }
 
 // @[00]@| GMA 4.2.2

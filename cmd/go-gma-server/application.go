@@ -15,12 +15,14 @@ import (
 	"github.com/MadScienceZone/go-gma/v5/auth"
 	"github.com/MadScienceZone/go-gma/v5/mapper"
 	"github.com/MadScienceZone/go-gma/v5/util"
+	"golang.org/x/exp/slices"
 )
 
 type DebugFlags uint64
 
 const (
 	DebugAuth DebugFlags = 1 << iota
+	DebugDB
 	DebugEvents
 	DebugIO
 	DebugInit
@@ -42,6 +44,7 @@ func DebugFlagNames(flags DebugFlags) string {
 		name string
 	}{
 		{bits: DebugAuth, name: "auth"},
+		{bits: DebugDB, name: "db"},
 		{bits: DebugEvents, name: "events"},
 		{bits: DebugIO, name: "i/o"},
 		{bits: DebugInit, name: "init"},
@@ -96,6 +99,58 @@ type Application struct {
 	// Pathname for database file.
 	DatabaseName string
 	sqldb        *sql.DB
+
+	Clients    []*mapper.ClientConnection
+	clientLock sync.RWMutex
+}
+
+func (a *Application) AddClient(c *mapper.ClientConnection) {
+	if c == nil || a == nil {
+		return
+	}
+	a.Debug(DebugIO, "acquiring write lock on client list")
+	a.clientLock.Lock()
+	defer func() {
+		a.Debug(DebugIO, "releasing write lock on client list")
+		a.clientLock.Unlock()
+	}()
+	a.Debug(DebugIO, "write lock granted; proceeding to add client")
+	a.Clients = append(a.Clients, c)
+}
+
+func (a *Application) RemoveClient(c *mapper.ClientConnection) {
+	if c == nil || a == nil {
+		return
+	}
+	a.Debug(DebugIO, "acquiring write lock on client list")
+	a.clientLock.Lock()
+	defer func() {
+		a.Debug(DebugIO, "releasing write lock on client list")
+		a.clientLock.Unlock()
+	}()
+	a.Debug(DebugIO, "write lock granted; proceeding to drop client")
+	pos := slices.Index[*mapper.ClientConnection](a.Clients, c)
+	if pos < 0 {
+		a.Logf("client %v not found in server's client list, so can't delete it more", c.IdTag())
+		return
+	}
+	a.Clients[pos] = nil
+	a.Clients = slices.Delete[[]*mapper.ClientConnection, *mapper.ClientConnection](a.Clients, pos, pos+1)
+	a.Debug(DebugIO, "removed c.IdTag()")
+}
+
+func (a *Application) GetClients() []*mapper.ClientConnection {
+	if a == nil {
+		return nil
+	}
+	a.Debug(DebugIO, "acquiring read lock on client list")
+	a.clientLock.RLock()
+	defer func() {
+		a.Debug(DebugIO, "releasing read lock on client list")
+		a.clientLock.RUnlock()
+	}()
+	a.Debug(DebugIO, "read lock granted; proceeding to get client list")
+	return a.Clients
 }
 
 //
@@ -167,6 +222,8 @@ func (a *Application) GetAppOptions() error {
 				a.DebugLevel = DebugAll
 			case "auth":
 				a.DebugLevel = DebugAuth
+			case "db":
+				a.DebugLevel = DebugDB
 			case "events":
 				a.DebugLevel = DebugEvents
 			case "I/O", "i/o", "io":
@@ -690,10 +747,93 @@ func (a *Application) GetPreamble() ([]string, []string, []string, bool) {
 	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, a.clientPreamble.syncData
 }
 
-func (a *Application) HandleServerMessage(payload mapper.MessagePayload) {
+func (a *Application) HandleServerMessage(payload mapper.MessagePayload, requester *mapper.ClientConnection) {
 	a.Logf("Received %T %v", payload, payload)
-	switch p := packet.(type) {
+	switch p := payload.(type) {
 	case mapper.AddImageMessagePayload:
-	}
+		for _, instance := range p.Sizes {
+			if instance.ImageData != nil && len(instance.ImageData) > 0 {
+				a.Logf("not storing image \"%s\"@%v (inline image data not supported)", p.Name, instance.Zoom)
+				continue
+			}
+			if err := a.StoreImageData(p.Name, mapper.ImageInstance{
+				Zoom:        instance.Zoom,
+				IsLocalFile: instance.IsLocalFile,
+				File:        instance.File,
+			}); err != nil {
+				a.Logf("error storing image data for \"%s\"@%v: %v", p.Name, instance.Zoom, err)
+			}
+		}
+		if err := a.SendToAllExcept(requester, mapper.AddImage, p); err != nil {
+			a.Logf("error sending on AddImage to peer systems: %v", err)
+		}
 
+	case mapper.QueryImageMessagePayload:
+		imgData, err := a.QueryImageData(mapper.ImageDefinition{Name: p.Name})
+		if err != nil {
+			a.Logf("unable to answer QueryImage (%v)", err)
+			if err := a.SendToAllExcept(requester, mapper.QueryImage, p); err != nil {
+				a.Logf("error sending QueryImage on to peers, as well: %v", err)
+			}
+			return
+		}
+
+		// Now that we have all the answers we know about, figure out
+		// which we can answer directly and which ones we'll need to
+		// call in help for.
+		var answers mapper.AddImageMessagePayload
+		var questions mapper.QueryImageMessagePayload
+
+		answers.Name = p.Name
+		questions.Name = p.Name
+		for _, askedFor := range p.Sizes {
+			// do we know the answer to this one?
+			askOthers := true
+			for _, found := range imgData.Sizes {
+				if found.Zoom == askedFor.Zoom {
+					// yes!
+					answers.Sizes = append(answers.Sizes, mapper.ImageInstance{
+						Zoom:        found.Zoom,
+						IsLocalFile: found.IsLocalFile,
+						File:        found.File,
+					})
+					askOthers = false
+					break
+				}
+			}
+			if askOthers {
+				// we didn't find it in the database, ask if anyone else knows...
+				questions.Sizes = append(questions.Sizes, mapper.ImageInstance{
+					Zoom: askedFor.Zoom,
+				})
+			}
+		}
+
+		if len(answers.Sizes) > 0 {
+			if err := requester.Conn.Send(mapper.AddImage, answers); err != nil {
+				a.Logf("error sending QueryImage answer to requester: %v", err)
+			}
+		}
+
+		if len(questions.Sizes) > 0 {
+			if err := a.SendToAllExcept(requester, mapper.QueryImage, questions); err != nil {
+				a.Logf("error asking QueryImage query out to other peers: %v", err)
+			}
+		}
+	}
+}
+
+func (a *Application) SendToAllExcept(c *mapper.ClientConnection, cmd mapper.ServerMessage, data any) error {
+	a.Debugf(DebugIO, "sending %v to all clients except %v", data, c.IdTag())
+	var reportedError error
+
+	for _, peer := range a.GetClients() {
+		if peer != c {
+			if err := c.Conn.Send(cmd, data); err != nil {
+				a.Logf("error sending %v to client %v: %v", data, c.IdTag(), err)
+				reportedError = err
+			}
+		}
+	}
+	return reportedError
 }
