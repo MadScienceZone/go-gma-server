@@ -689,3 +689,11 @@ func (a *Application) GetPreamble() ([]string, []string, []string, bool) {
 
 	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, a.clientPreamble.syncData
 }
+
+func (a *Application) HandleServerMessage(payload mapper.MessagePayload) {
+	a.Logf("Received %T %v", payload, payload)
+	switch p := packet.(type) {
+	case mapper.AddImageMessagePayload:
+	}
+
+}

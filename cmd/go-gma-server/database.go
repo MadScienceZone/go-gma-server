@@ -65,16 +65,10 @@ func (a *Application) dbOpen() error {
 				rawdata text    not null
 			);
 			create table images (
-				name    text    primary key
-			);
-			create table imagesizes (
 				name	text	not null,
 				zoom    real    not null,
 				location text   not null,
 				islocal integer(1) not null,
-					foreign key (name)
-						references images (name)
-						on delete cascade,
 					primary key (name,zoom)
 		);`)
 
@@ -93,6 +87,21 @@ func (a *Application) dbClose() error {
 		return nil
 	}
 	return a.sqldb.Close()
+}
+
+func (a *Application) StoreImageData(imageName string, zoom float64, isLocal bool, serverID string) error {
+	result, err := a.sqldb.Exec(`REPLACE INTO images (name, zoom, location, islocal) VALUES (?, ?, ?, ?);`, imageName, zoom, serverID, isLocal)
+	if err != nil {
+		a.Logf(DebugDB, "error storing image record \"%s\"@%v local=%v, ID=%v: %v", imageName, zoom, isLocal, serverID, err)
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, (unable to examine results: %v)", imageName, zoom, isLocal, serverID, err)
+	} else {
+		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, rows affected=%d", imageName, zoom, isLocal, serverID, affected)
+	}
+	return nil
 }
 
 // @[00]@| GMA 4.2.2
