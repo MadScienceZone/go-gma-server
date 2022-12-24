@@ -22,8 +22,11 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 
+	"github.com/MadScienceZone/go-gma/v5/dice"
 	"github.com/MadScienceZone/go-gma/v5/mapper"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -47,22 +50,16 @@ func (a *Application) dbOpen() error {
 		}
 
 		_, err = a.sqldb.Exec(`
-			create table users (
-				userid integer primary key,
-				username text not null
-			);
 			create table dicepresets (
-				presetid    integer primary key,
-				userid      integer not null,
+				user        text    not null,
 				name        text    not null,
 				description text    not null,
 				rollspec    text    not null,
-					foreign key (userid)
-						references users (userid)
-						on delete cascade
+					primary key (user, name)
 			);
 			create table chats (
 				msgid   integer primary key,
+				msgtype integer,
 				rawdata text    not null
 			);
 			create table images (
@@ -93,15 +90,39 @@ func (a *Application) dbClose() error {
 func (a *Application) StoreImageData(imageName string, img mapper.ImageInstance) error {
 	result, err := a.sqldb.Exec(`REPLACE INTO images (name, zoom, location, islocal) VALUES (?, ?, ?, ?);`, imageName, img.Zoom, img.File, img.IsLocalFile)
 	if err != nil {
-		a.Logf("error storing image record \"%s\"@%v local=%v, ID=%v: %v", imageName, img.Zoom, img.IsLocalFile, img.File, err)
 		return err
 	}
+	a.debugDbAffected(result, fmt.Sprintf("stored image record \"%s\"@%v local=%v, ID=%v", imageName, img.Zoom, img.IsLocalFile, img.File))
+	return nil
+}
+
+func (a *Application) debugDbAffected(result sql.Result, msg string) {
 	affected, err := result.RowsAffected()
 	if err != nil {
-		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, (unable to examine results: %v)", imageName, img.Zoom, img.IsLocalFile, img.File, err)
+		a.Debugf(DebugDB, "%s, (unable to examine results: %v)", msg, err)
 	} else {
-		a.Debugf(DebugDB, "stored image record \"%s\"@%v local=%v, ID=%v, rows affected=%d", imageName, img.Zoom, img.IsLocalFile, img.File, affected)
+		a.Debugf(DebugDB, "%s, rows affected=%d", msg, affected)
 	}
+}
+
+func (a *Application) ClearChatHistory(target int) error {
+	var result sql.Result
+	var err error
+
+	if target == 0 {
+		// clear everything
+		result, err = a.sqldb.Exec(`delete from chats`)
+	} else if target < 0 {
+		// clear all but most recent -target messages
+		result, err = a.sqldb.Exec(`delete from chats where msgid not in (select msgid from chats order by msgid desc limit ?)`, -target)
+	} else {
+		// clear all messages earlier than target
+		result, err = a.sqldb.Exec(`delete from chats where msgid < ?`, target)
+	}
+	if err != nil {
+		return err
+	}
+	a.debugDbAffected(result, fmt.Sprintf("clear chat history target=%d", target))
 	return nil
 }
 
@@ -111,7 +132,6 @@ func (a *Application) QueryImageData(img mapper.ImageDefinition) (mapper.ImageDe
 	a.Debugf(DebugDB, "query of image \"%s\"", img.Name)
 	rows, err := a.sqldb.Query(`SELECT zoom, location, islocal FROM images WHERE name=?`, img.Name)
 	if err != nil {
-		a.Logf("error retrieving image data for \"%s\": %v", img.Name, err)
 		return resultSet, err
 	}
 	defer rows.Close()
@@ -122,7 +142,6 @@ func (a *Application) QueryImageData(img mapper.ImageDefinition) (mapper.ImageDe
 		var isLocal int
 
 		if err := rows.Scan(&instance.Zoom, &instance.File, &isLocal); err != nil {
-			a.Logf("error scanning row of image data: %v", err)
 			return resultSet, err
 		}
 		if isLocal != 0 {
@@ -131,10 +150,140 @@ func (a *Application) QueryImageData(img mapper.ImageDefinition) (mapper.ImageDe
 		resultSet.Sizes = append(resultSet.Sizes, instance)
 		a.Debugf(DebugDB, "result: \"%s\"@%v from \"%s\" (local=%v)", img.Name, instance.Zoom, instance.File, instance.IsLocalFile)
 	}
-	if err := rows.Err(); err != nil {
-		a.Logf("error retrieving rows of image data: %v", err)
+	return resultSet, rows.Err()
+}
+
+func (a *Application) QueryChatHistory(target int, requester *mapper.ClientConnection) error {
+	var rows *sql.Rows
+	var err error
+
+	a.Debugf(DebugDB, "query of chat history target=%d", target)
+	if target == 0 {
+		rows, err = a.sqldb.Query(`SELECT msgid, msgtype, rawdata FROM chats`)
+	} else if target < 0 {
+		rows, err = a.sqldb.Query(`SELECT msgid, msgtype, rawdata FROM chats WHERE msgid not in (select msgid from chats order by msgid desc limit ?)`, -target)
+	} else {
+		rows, err = a.sqldb.Query(`SELECT msgid, msgtype, rawdata FROM chats WHERE msgid > ?`, target)
 	}
-	return resultSet, err
+
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var msgid int
+		var msgtype int
+		var jdata string
+
+		if err := rows.Scan(&msgid, &msgtype, &jdata); err != nil {
+			return err
+		}
+
+		switch msgtype {
+		case int(mapper.ClearChat):
+			var cc mapper.ClearChatMessagePayload
+			if err := json.Unmarshal([]byte(jdata), &cc); err != nil {
+				return err
+			}
+			requester.Conn.Send(mapper.ClearChat, cc)
+
+		case int(mapper.ChatMessage):
+			var chat mapper.ChatMessageMessagePayload
+			if err := json.Unmarshal([]byte(jdata), &chat); err != nil {
+				return err
+			}
+			// TODO ONLY if it was for them
+			requester.Conn.Send(mapper.ChatMessage, chat)
+
+		case int(mapper.RollResult):
+			var rr mapper.RollResultMessagePayload
+			if err := json.Unmarshal([]byte(jdata), &rr); err != nil {
+				return err
+			}
+			// TODO ONLY if it was for them
+			requester.Conn.Send(mapper.RollResult, rr)
+
+		default:
+			a.Logf("Found item of type %v in chat history (ignored)", msgtype)
+		}
+	}
+	return rows.Err()
+}
+
+func (a *Application) StoreDicePresets(user string, presets []dice.DieRollPreset, deleteOld bool) error {
+	if deleteOld {
+		a.Debugf(DebugDB, "removing existing die-roll presets for %s", user)
+		result, err := a.sqldb.Exec(`delete from dicepresets where user = ?`, user)
+		if err != nil {
+			return err
+		}
+		a.debugDbAffected(result, fmt.Sprintf("clear old presets for %s", user))
+	}
+
+	for i, preset := range presets {
+		a.Debugf(DebugDB, "adding new preset %s for %s", preset.Name, user)
+		result, err := a.sqldb.Exec(`
+			replace into dicepresets (user, name, description, rollspec) 
+				values (?, ?, ?, ?)`,
+			user, preset.Name, preset.Description, preset.DieRollSpec)
+		if err != nil {
+			return err
+		}
+		a.debugDbAffected(result, fmt.Sprintf("add preset #%d for %s", i, user))
+	}
+	return nil
+}
+
+func (a *Application) FilterDicePresets(user string, f mapper.FilterDicePresetsMessagePayload) error {
+	a.Debugf(DebugDB, "removing existing die-roll presets for %s matching /%s/", user, f.Filter)
+	result, err := a.sqldb.Exec(`delete from dicepresets where user = ? and name regexp ?`, user, f.Filter)
+	if err != nil {
+		return err
+	}
+	a.debugDbAffected(result, fmt.Sprintf("filter presets for %s", user))
+	return nil
+}
+
+func (a *Application) SendDicePresets(user string) error {
+	rows, err := a.sqldb.Query(`select name, description, rollspec from dicepresets where user = ?`, user)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var pset mapper.UpdateDicePresetsMessagePayload
+
+	for rows.Next() {
+		var preset dice.DieRollPreset
+		if err := rows.Scan(&preset.Name, &preset.Description, &preset.DieRollSpec); err != nil {
+			return err
+		}
+		pset.Presets = append(pset.Presets, preset)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, peer := range a.GetClients() {
+		if peer.Auth != nil && peer.Auth.Username == user {
+			peer.Conn.Send(mapper.UpdateDicePresets, pset)
+		}
+	}
+	return nil
+}
+
+func (a *Application) AddToChatHistory(id int, chatType mapper.ServerMessage, chatData any) error {
+	jdata, err := json.Marshal(chatData)
+	if err != nil {
+		return err
+	}
+	result, err := a.sqldb.Exec(`insert into chats (msgid, msgtype, rawdata) values (?, ?, ?)`, id, int(chatType), string(jdata))
+	if err != nil {
+		return err
+	}
+	a.debugDbAffected(result, "add to chat history")
+	return nil
 }
 
 // @[00]@| GMA 4.2.2

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MadScienceZone/go-gma/v5/auth"
 	"github.com/MadScienceZone/go-gma/v5/mapper"
@@ -30,12 +31,16 @@ const (
 	DebugAll DebugFlags = 0xffffffff
 )
 
-func DebugFlagNames(flags DebugFlags) string {
+//
+// DebugFlagNameSlice returns a list of debug option names
+// from the given DebugFlags value.
+//
+func DebugFlagNameSlice(flags DebugFlags) []string {
 	if flags == 0 {
-		return "<none>"
+		return nil
 	}
 	if flags == DebugAll {
-		return "<all>"
+		return []string{"all"}
 	}
 
 	var list []string
@@ -54,8 +59,61 @@ func DebugFlagNames(flags DebugFlags) string {
 			list = append(list, f.name)
 		}
 	}
+	return list
+}
 
+//
+// DebugFlagNames returns a single string representation of
+// the debugging flags (topics) stored in the DebugFlags
+// value passed in.
+//
+func DebugFlagNames(flags DebugFlags) string {
+	list := DebugFlagNameSlice(flags)
+	if list == nil {
+		return "<none>"
+	}
 	return "<" + strings.Join(list, ",") + ">"
+}
+
+//
+// NamedDebugFlags takes a comma-separated list of
+// debug flag (topic) names, or a list of individual
+// names, or both, and returns the DebugFlags
+// value which includes all of them.
+//
+// If "none" appears in the list, it cancels all previous
+// values seen, but subsequent names will add their values
+// to the list.
+//
+func NamedDebugFlags(names ...string) (DebugFlags, error) {
+	var d DebugFlags
+	var err error
+	for _, name := range names {
+		for _, flag := range strings.Split(name, ",") {
+			switch flag {
+			case "none":
+				d = 0
+			case "all":
+				d = DebugAll
+			case "auth":
+				d |= DebugAuth
+			case "db":
+				d |= DebugDB
+			case "events":
+				d |= DebugEvents
+			case "I/O", "i/o", "io":
+				d |= DebugIO
+			case "init":
+				d |= DebugInit
+			case "misc":
+				d |= DebugMisc
+			default:
+				err = fmt.Errorf("No such -debug flag: \"%s\"", flag)
+				// but keep processing the rest
+			}
+		}
+	}
+	return d, err
 }
 
 //
@@ -100,8 +158,9 @@ type Application struct {
 	DatabaseName string
 	sqldb        *sql.DB
 
-	Clients    []*mapper.ClientConnection
-	clientLock sync.RWMutex
+	Clients            []*mapper.ClientConnection
+	clientLock         sync.RWMutex
+	MessageIDGenerator chan int
 }
 
 func (a *Application) AddClient(c *mapper.ClientConnection) {
@@ -114,7 +173,7 @@ func (a *Application) AddClient(c *mapper.ClientConnection) {
 		a.Debug(DebugIO, "releasing write lock on client list")
 		a.clientLock.Unlock()
 	}()
-	a.Debug(DebugIO, "write lock granted; proceeding to add client")
+	a.Debugf(DebugIO, "write lock granted; proceeding to add client %s", c.IdTag())
 	a.Clients = append(a.Clients, c)
 }
 
@@ -136,7 +195,7 @@ func (a *Application) RemoveClient(c *mapper.ClientConnection) {
 	}
 	a.Clients[pos] = nil
 	a.Clients = slices.Delete[[]*mapper.ClientConnection, *mapper.ClientConnection](a.Clients, pos, pos+1)
-	a.Debug(DebugIO, "removed c.IdTag()")
+	a.Debugf(DebugIO, "removed client %s", c.IdTag())
 }
 
 func (a *Application) GetClients() []*mapper.ClientConnection {
@@ -214,28 +273,7 @@ func (a *Application) GetAppOptions() error {
 	flag.Parse()
 
 	if *debugFlags != "" {
-		for _, flag := range strings.Split(*debugFlags, ",") {
-			switch flag {
-			case "none":
-				a.DebugLevel = 0
-			case "all":
-				a.DebugLevel = DebugAll
-			case "auth":
-				a.DebugLevel = DebugAuth
-			case "db":
-				a.DebugLevel = DebugDB
-			case "events":
-				a.DebugLevel = DebugEvents
-			case "I/O", "i/o", "io":
-				a.DebugLevel = DebugIO
-			case "init":
-				a.DebugLevel |= DebugInit
-			case "misc":
-				a.DebugLevel |= DebugMisc
-			default:
-				return fmt.Errorf("No such -debug flag: \"%s\"", flag)
-			}
-		}
+		a.DebugLevel, _ = NamedDebugFlags(*debugFlags)
 		a.Debugf(DebugInit, "debugging flags set to %#v%s", a.DebugLevel, DebugFlagNames(a.DebugLevel))
 	}
 
@@ -820,20 +858,329 @@ func (a *Application) HandleServerMessage(payload mapper.MessagePayload, request
 				a.Logf("error asking QueryImage query out to other peers: %v", err)
 			}
 		}
+
+	case mapper.ClearChatMessagePayload:
+		if requester != nil && requester.Auth != nil {
+			p.RequestedBy = requester.Auth.Username
+		}
+		p.MessageID = <-a.MessageIDGenerator
+		a.SendToAllExcept(requester, mapper.ClearChat, p)
+		if err := a.ClearChatHistory(p.Target); err != nil {
+			a.Logf("error clearing chat history (target=%d): %v", p.Target, err)
+		}
+		if err := a.AddToChatHistory(p.MessageID, mapper.ClearChat, p); err != nil {
+			a.Logf("unable to add ClearChat event to chat history: %v", err)
+		}
+
+	case mapper.RollDiceMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("refusing to accept die roll from unauthenticated user")
+			requester.Conn.Send(mapper.ChatMessage, mapper.ChatMessageMessagePayload{
+				ChatCommon: mapper.ChatCommon{
+					MessageID: <-a.MessageIDGenerator,
+				},
+				Text: "I can't accept your die roll request. I don't know who you even are.",
+			})
+			return
+		}
+
+		label, results, err := requester.D.DoRoll(p.RollSpec)
+		if err != nil {
+			requester.Conn.Send(mapper.ChatMessage, mapper.ChatMessageMessagePayload{
+				ChatCommon: mapper.ChatCommon{
+					MessageID: <-a.MessageIDGenerator,
+				},
+				Text: fmt.Sprintf("Unable to understand your die-roll request: %v", err),
+			})
+			return
+		}
+		var genericParts []string
+		for _, part := range strings.Split(label, "‖") {
+			if pos := strings.IndexRune(part, '≡'); pos >= 0 {
+				genericParts = append(genericParts, part[:pos])
+			} else {
+				genericParts = append(genericParts, part)
+			}
+		}
+		genericLabel := strings.Join(genericParts, ", ")
+
+		response := mapper.RollResultMessagePayload{
+			ChatCommon: mapper.ChatCommon{
+				Recipients: p.Recipients,
+				ToAll:      p.ToAll,
+				ToGM:       p.ToGM,
+			},
+			Title: label,
+		}
+		for _, r := range results {
+			response.MessageID = <-a.MessageIDGenerator
+			response.Result = r
+
+			if err := a.AddToChatHistory(response.MessageID, mapper.RollResult, response); err != nil {
+				a.Logf("unable to add RollResult event to chat history: %v", err)
+			}
+
+			for _, peer := range a.GetClients() {
+				if p.ToGM {
+					if peer == requester {
+						peer.Conn.Send(mapper.ChatMessage, mapper.ChatMessageMessagePayload{
+							ChatCommon: mapper.ChatCommon{
+								MessageID: <-a.MessageIDGenerator,
+							},
+							Text: "(die-roll result sent to GM)",
+						})
+					}
+					if peer.Auth == nil || !peer.Auth.GmMode {
+						a.Debugf(DebugIO, "sending to GM and %v isn't the GM (skipped)", peer.IdTag())
+						continue
+					}
+				} else if !p.ToAll {
+					if peer.Auth == nil || peer.Auth.Username == "" {
+						a.Debugf(DebugIO, "sending to explicit list but we don't know who %v is (skipped)", peer.IdTag())
+						continue
+					}
+					if peer.Auth.Username != requester.Auth.Username && slices.Index[string](p.Recipients, peer.Auth.Username) < 0 {
+						a.Debugf(DebugIO, "sending to explicit list but user \"%s\" (from %v) isn't on the list (skipped)", peer.Auth.Username, peer.IdTag())
+						continue
+					}
+				}
+
+				if peer.Features.DiceColorBoxes {
+					response.Title = label
+				} else {
+					response.Title = genericLabel
+				}
+
+				if err := peer.Conn.Send(mapper.RollResult, response); err != nil {
+					a.Logf("error sending die-roll result %v to %v: %v", response, peer.IdTag(), err)
+				}
+			}
+		}
+
+	case mapper.SyncChatMessagePayload:
+		if err := a.QueryChatHistory(p.Target, requester); err != nil {
+			a.Logf("error syncing chat history (target=%d): %v", p.Target, err)
+		}
+
+	case mapper.DefineDicePresetsMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("Unable to store die-roll preset for unauthenticated user")
+			return
+		}
+
+		target := requester.Auth.Username
+		if p.For != "" {
+			if requester.Auth.GmMode {
+				target = p.For
+				a.Debugf(DebugIO, "GM requests storage of die-roll presets for %s", target)
+			} else {
+				a.Logf("non-GM request to change die-roll presets for %s ignored", p.For)
+			}
+		}
+
+		if err := a.StoreDicePresets(target, p.Presets, true); err != nil {
+			a.Logf("error storing die-roll preset: %v", err)
+		}
+		if err := a.SendDicePresets(target); err != nil {
+			a.Logf("error sending die-roll presets after changing them: %v", err)
+		}
+
+	case mapper.AddDicePresetsMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("Unable to store die-roll preset for unauthenticated user")
+			return
+		}
+
+		target := requester.Auth.Username
+		if p.For != "" {
+			if requester.Auth.GmMode {
+				target = p.For
+				a.Debugf(DebugIO, "GM requests add to die-roll presets for %s", target)
+			} else {
+				a.Logf("non-GM request to add to die-roll presets for %s ignored", p.For)
+			}
+		}
+
+		if err := a.StoreDicePresets(target, p.Presets, false); err != nil {
+			a.Logf("error adding to die-roll preset: %v", err)
+		}
+		if err := a.SendDicePresets(target); err != nil {
+			a.Logf("error sending die-roll presets after changing them: %v", err)
+		}
+
+	case mapper.FilterDicePresetsMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("Unable to filter die-roll preset for unauthenticated user")
+			return
+		}
+
+		target := requester.Auth.Username
+		if p.For != "" {
+			if requester.Auth.GmMode {
+				target = p.For
+				a.Debugf(DebugIO, "GM requests filter of die-roll presets for %s", target)
+			} else {
+				a.Logf("non-GM request to filter die-roll presets for %s ignored", p.For)
+			}
+		}
+
+		if err := a.FilterDicePresets(target, p); err != nil {
+			a.Logf("error filtering die-roll preset for %s with /%s/: %v", target, p.Filter, err)
+		}
+		if err := a.SendDicePresets(target); err != nil {
+			a.Logf("error sending die-roll presets after filtering them: %v", err)
+		}
+
+	case mapper.QueryDicePresetsMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("Unable to query die-roll preset for unauthenticated user")
+			return
+		}
+
+		target := requester.Auth.Username
+		if p.For != "" {
+			if requester.Auth.GmMode {
+				target = p.For
+				a.Debugf(DebugIO, "GM requests die-roll presets for %s", target)
+			} else {
+				a.Logf("non-GM request to get die-roll presets for %s ignored", p.For)
+			}
+		}
+		if err := a.SendDicePresets(target); err != nil {
+			a.Logf("error sending die-roll presets: %v", err)
+		}
+
+	case mapper.ChatMessageMessagePayload:
+		if requester.Auth == nil {
+			a.Logf("refusing to pass on chat message from unauthenticated user")
+			_ = requester.Conn.Send(mapper.ChatMessage, mapper.ChatMessageMessagePayload{
+				ChatCommon: mapper.ChatCommon{
+					MessageID: <-a.MessageIDGenerator,
+				},
+				Text: "I can't accept that chat message since I don't know who you even are.",
+			})
+			return
+		}
+
+		p.Sender = requester.Auth.Username
+		p.MessageID = <-a.MessageIDGenerator
+
+		if err := a.AddToChatHistory(p.MessageID, mapper.ChatMessage, p); err != nil {
+			a.Logf("unable to add ChatMessage event to chat history: %v", err)
+		}
+
+		for _, peer := range a.GetClients() {
+			if p.ToGM {
+				if peer.Auth == nil || (!peer.Auth.GmMode && peer.Auth.Username != requester.Auth.Username) {
+					a.Debugf(DebugIO, "sending to GM and %v isn't the GM (skipped)", peer.IdTag())
+					continue
+				}
+			} else if !p.ToAll {
+				if peer.Auth == nil || peer.Auth.Username == "" {
+					a.Debugf(DebugIO, "sending to explicit list but we don't know who %v is (skipped)", peer.IdTag())
+					continue
+				}
+				if peer.Auth.Username != requester.Auth.Username && slices.Index[string](p.Recipients, peer.Auth.Username) < 0 {
+					a.Debugf(DebugIO, "sending to explicit list but user \"%s\" (from %v) isn't on the list (skipped)", peer.Auth.Username, peer.IdTag())
+					continue
+				}
+			}
+
+			if err := peer.Conn.Send(mapper.ChatMessage, p); err != nil {
+				a.Logf("error sending message %v to %v: %v", p, peer.IdTag(), err)
+			}
+		}
+
+	case mapper.QueryPeersMessagePayload:
+		var peers mapper.UpdatePeerListMessagePayload
+		for _, peer := range a.GetClients() {
+			thisPeer := mapper.Peer{
+				Addr:     peer.Address,
+				LastPolo: time.Since(peer.LastPoloTime).Seconds(),
+				IsMe:     peer == requester,
+			}
+			if peer.Auth != nil {
+				thisPeer.User = peer.Auth.Username
+				thisPeer.Client = peer.Auth.Client
+				thisPeer.IsAuthenticated = peer.Auth.Username != ""
+			}
+			peers.PeerList = append(peers.PeerList, thisPeer)
+		}
+		if err := requester.Conn.Send(mapper.UpdatePeerList, peers); err != nil {
+			a.Logf("error sending peer list: $v", err)
+		}
+
+	// These commands are passed on to our peers with no further action required.
+	case mapper.MarkMessagePayload,
+		mapper.UpdateProgressMessagePayload:
+		a.SendToAllExcept(requester, payload.MessageType(), payload)
+
+	// These commands are passed on to our peers and remembered for later sync operations.
+	// TODO effect on state
+	case mapper.AdjustViewMessagePayload, mapper.ClearMessagePayload, mapper.ClearFromMessagePayload,
+		mapper.LoadFromMessagePayload,
+		mapper.LoadArcObjectMessagePayload,
+		mapper.LoadCircleObjectMessagePayload,
+		mapper.LoadLineObjectMessagePayload,
+		mapper.LoadPolygonObjectMessagePayload,
+		mapper.LoadRectangleObjectMessagePayload,
+		mapper.LoadSpellAreaOfEffectObjectMessagePayload,
+		mapper.LoadTextObjectMessagePayload,
+		mapper.LoadTileObjectMessagePayload,
+		mapper.AddObjAttributesMessagePayload,
+		mapper.RemoveObjAttributesMessagePayload,
+		mapper.UpdateObjAttributesMessagePayload,
+		mapper.PlaceSomeoneMessagePayload:
+		a.SendToAllExcept(requester, payload.MessageType(), payload)
+
+	// TODO as above but they are privileged
+	case mapper.CombatModeMessagePayload, mapper.UpdateStatusMarkerMessagePayload,
+		mapper.UpdateTurnMessagePayload, mapper.UpdateInitiativeMessagePayload,
+		mapper.UpdateClockMessagePayload, mapper.ToolbarMessagePayload:
+		if requester == nil || requester.Auth == nil {
+			a.Logf("refusing to execute privileged command %v for unauthenticated user", p.MessageType())
+			requester.Conn.Send(mapper.Priv, mapper.PrivMessagePayload{
+				Command: p.RawMessage(),
+				Reason:  "You are not the GM. You might not even be real.",
+			})
+			return
+		}
+		if !requester.Auth.GmMode {
+			a.Logf("refusing to execute privileged command %v %v for non-GM user %s", p.MessageType(), p, requester.Auth.Username)
+			requester.Conn.Send(mapper.Priv, mapper.PrivMessagePayload{
+				Command: p.RawMessage(),
+				Reason:  "You are not the GM.",
+			})
+			return
+		}
+		a.SendToAllExcept(requester, payload.MessageType(), payload)
+
+	case mapper.SyncMessagePayload:
+		//TODO
 	}
 }
 
 func (a *Application) SendToAllExcept(c *mapper.ClientConnection, cmd mapper.ServerMessage, data any) error {
-	a.Debugf(DebugIO, "sending %v to all clients except %v", data, c.IdTag())
+	if c == nil {
+		a.Debugf(DebugIO, "sending %v %v to all clients", cmd, data)
+	} else {
+		a.Debugf(DebugIO, "sending %v %v to all clients except %v", cmd, data, c.IdTag())
+	}
 	var reportedError error
 
 	for _, peer := range a.GetClients() {
-		if peer != c {
-			if err := c.Conn.Send(cmd, data); err != nil {
-				a.Logf("error sending %v to client %v: %v", data, c.IdTag(), err)
+		a.Debugf(DebugIO, "peer %v", peer.IdTag())
+		if c == nil || peer != c {
+			a.Debugf(DebugIO, "-> %v %v %v", peer.IdTag(), cmd, data)
+			if err := peer.Conn.Send(cmd, data); err != nil {
+				a.Logf("error sending %v to client %v: %v", data, peer.IdTag(), err)
 				reportedError = err
 			}
 		}
 	}
 	return reportedError
+}
+
+func (a *Application) SendToAll(cmd mapper.ServerMessage, data any) error {
+	return a.SendToAllExcept(nil, cmd, data)
 }

@@ -99,6 +99,7 @@ func eventMonitor(sigChan chan os.Signal, stopChan chan int, app *Application) {
 
 		case <-ping_signal.C:
 			app.Debug(DebugEvents, "ping timer expired")
+			app.SendToAll(mapper.Marco, nil)
 			//			any_connections := ms.PingAll()
 			//			if any_connections {
 			//				if report_interval > 1 {
@@ -121,12 +122,29 @@ func eventMonitor(sigChan chan os.Signal, stopChan chan int, app *Application) {
 	}
 }
 
+func generateMessageIDs(c chan int) {
+	// Start off with the time on the clock, on the assumption
+	// that on average there won't be more than a chat message per
+	// second since the server was started, so when the server is
+	// restarted, this should give us a safe margin to start a new
+	// set of IDs. It's simplistic, but works for our purposes.
+	var nextMessageID int = int(time.Now().Unix())
+
+	// Now just feed these numbers to the channel as fast as they are
+	// consumed.
+	for {
+		c <- nextMessageID
+		nextMessageID++
+	}
+}
+
 func main() {
 	var nrApp *newrelic.Application
 	var err error
 
 	app := Application{
-		Logger: log.Default(),
+		Logger:             log.Default(),
+		MessageIDGenerator: make(chan int),
 	}
 	app.Logger.SetPrefix("go-gma-server: ")
 	if err := app.GetAppOptions(); err != nil {
@@ -138,6 +156,8 @@ func main() {
 		mapper.GMAMapperProtocol,
 		mapper.MinimumSupportedMapProtocol,
 		mapper.MaximumSupportedMapProtocol)
+
+	go generateMessageIDs(app.MessageIDGenerator)
 
 	/* instrumentation */
 	// set the following environment variables for the New Relic
@@ -228,9 +248,12 @@ func acceptIncomingConnections(incoming net.Listener, app *Application) {
 			continue
 		}
 
+		ourDebugFlags := DebugFlagNameSlice(app.DebugLevel)
+		debugFlags, _ := mapper.NamedDebugFlags(ourDebugFlags...)
+
 		newConnection, err := mapper.NewClientConnection(client,
 			mapper.WithServer(app),
-			mapper.WithClientDebuggingLevel(mapper.DebugAll),
+			mapper.WithClientDebuggingLevel(debugFlags),
 			mapper.WithClientAuthenticator(auth),
 		)
 		if err != nil {
