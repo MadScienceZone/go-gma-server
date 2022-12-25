@@ -32,7 +32,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -70,10 +69,7 @@ func eventMonitor(sigChan chan os.Signal, stopChan chan int, app *Application) {
 
 			case syscall.SIGUSR1:
 				app.Debug(DebugEvents, "SIGUSR1; reloading configuration data")
-				if err := app.refreshClientPreamble(); err != nil {
-					app.Logf("WARNING: client initialization file reload failed: %v", err)
-					app.Log("WARNING: client session setup data may be incomplete now")
-				}
+				app.clientPreamble.reload <- 0
 				if err := app.refreshAuthenticator(); err != nil {
 					app.Logf("WARNING: authenticator initialization file reload failed: %v", err)
 					app.Log("WARNING: client credentials may be incomplete or incorrect now")
@@ -142,10 +138,7 @@ func main() {
 	var nrApp *newrelic.Application
 	var err error
 
-	app := Application{
-		Logger:             log.Default(),
-		MessageIDGenerator: make(chan int),
-	}
+	app := NewApplication()
 	app.Logger.SetPrefix("go-gma-server: ")
 	if err := app.GetAppOptions(); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
@@ -158,6 +151,9 @@ func main() {
 		mapper.MaximumSupportedMapProtocol)
 
 	go generateMessageIDs(app.MessageIDGenerator)
+	go app.managePreambleData()
+	go app.manageClientList()
+	go app.manageGameState()
 
 	/* instrumentation */
 	// set the following environment variables for the New Relic

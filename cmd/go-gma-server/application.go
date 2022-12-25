@@ -28,6 +28,7 @@ const (
 	DebugIO
 	DebugInit
 	DebugMisc
+	DebugState
 	DebugAll DebugFlags = 0xffffffff
 )
 
@@ -54,6 +55,7 @@ func DebugFlagNameSlice(flags DebugFlags) []string {
 		{bits: DebugIO, name: "i/o"},
 		{bits: DebugInit, name: "init"},
 		{bits: DebugMisc, name: "misc"},
+		{bits: DebugState, name: "state"},
 	} {
 		if (flags & f.bits) != 0 {
 			list = append(list, f.name)
@@ -107,6 +109,8 @@ func NamedDebugFlags(names ...string) (DebugFlags, error) {
 				d |= DebugInit
 			case "misc":
 				d |= DebugMisc
+			case "state":
+				d |= DebugState
 			default:
 				err = fmt.Errorf("No such -debug flag: \"%s\"", flag)
 				// but keep processing the rest
@@ -136,12 +140,12 @@ type Application struct {
 	// the initial client command set.
 	InitFile string
 
+	// Information given to each connecting client at the start of
+	// their session
 	clientPreamble struct {
-		syncData  bool
-		preamble  []string
-		postAuth  []string
-		postReady []string
-		lock      sync.RWMutex
+		data   mapper.ClientPreamble
+		reload chan byte
+		fetch  chan *mapper.ClientPreamble
 	}
 
 	// If not empty, we require authentication, with passwords taken
@@ -158,58 +162,109 @@ type Application struct {
 	DatabaseName string
 	sqldb        *sql.DB
 
-	Clients            []*mapper.ClientConnection
-	clientLock         sync.RWMutex
+	clientData struct {
+		add    chan *mapper.ClientConnection
+		remove chan *mapper.ClientConnection
+		fetch  chan []*mapper.ClientConnection
+	}
+
 	MessageIDGenerator chan int
+
+	// Current game state
+	gameState struct {
+		sync   chan *mapper.ClientConnection
+		update chan *mapper.MessagePayload
+	}
 }
 
+func (a *Application) GetClientPreamble() *mapper.ClientPreamble {
+	a.Debug(DebugInit, "fetching client preamble from generator channel")
+	return <-a.clientPreamble.fetch
+}
+
+//
+// AddClient adds the given client connection to our liset of active
+// connections.
+//
 func (a *Application) AddClient(c *mapper.ClientConnection) {
-	if c == nil || a == nil {
-		return
-	}
-	a.Debug(DebugIO, "acquiring write lock on client list")
-	a.clientLock.Lock()
-	defer func() {
-		a.Debug(DebugIO, "releasing write lock on client list")
-		a.clientLock.Unlock()
-	}()
-	a.Debugf(DebugIO, "write lock granted; proceeding to add client %s", c.IdTag())
-	a.Clients = append(a.Clients, c)
+	a.clientData.add <- c
 }
 
+//
+// RemoveClients removes the given client from the list of connections.
+//
 func (a *Application) RemoveClient(c *mapper.ClientConnection) {
-	if c == nil || a == nil {
-		return
-	}
-	a.Debug(DebugIO, "acquiring write lock on client list")
-	a.clientLock.Lock()
-	defer func() {
-		a.Debug(DebugIO, "releasing write lock on client list")
-		a.clientLock.Unlock()
-	}()
-	a.Debug(DebugIO, "write lock granted; proceeding to drop client")
-	pos := slices.Index[*mapper.ClientConnection](a.Clients, c)
-	if pos < 0 {
-		a.Logf("client %v not found in server's client list, so can't delete it more", c.IdTag())
-		return
-	}
-	a.Clients[pos] = nil
-	a.Clients = slices.Delete[[]*mapper.ClientConnection, *mapper.ClientConnection](a.Clients, pos, pos+1)
-	a.Debugf(DebugIO, "removed client %s", c.IdTag())
+	a.clientData.remove <- c
 }
 
+//
+// GetClients returns a copy of the client list as it existed
+// at the time of the call.
+//
 func (a *Application) GetClients() []*mapper.ClientConnection {
-	if a == nil {
-		return nil
+	return <-a.clientData.fetch
+}
+
+func (a *Application) manageClientList() {
+	var clients []*mapper.ClientConnection
+
+	a.Log("client list manager started")
+	defer a.Log("client list manager stopped")
+
+	newClientListCopy := func() []*mapper.ClientConnection {
+		// make a new copy which a receiver can use with impunity in its own thread
+		var cp []*mapper.ClientConnection
+		for _, cc := range clients {
+			cp = append(cp, cc)
+		}
+		return cp
 	}
-	a.Debug(DebugIO, "acquiring read lock on client list")
-	a.clientLock.RLock()
-	defer func() {
-		a.Debug(DebugIO, "releasing read lock on client list")
-		a.clientLock.RUnlock()
-	}()
-	a.Debug(DebugIO, "read lock granted; proceeding to get client list")
-	return a.Clients
+
+	refreshChannel := func() {
+		// if we have a list already in the channel, consume it ourselves
+		select {
+		case <-a.clientData.fetch:
+			a.Log("removed old client list from channel")
+		default:
+			a.Log("no old client list in channel")
+		}
+	}
+
+	clientListCopy := newClientListCopy()
+
+	for {
+		select {
+		case a.clientData.fetch <- clientListCopy:
+			clientListCopy = newClientListCopy()
+			a.Log("pushed client list to channel")
+
+		case c := <-a.clientData.add:
+			if c != nil {
+				clients = append(clients, c)
+				a.Debugf(DebugIO, "added new client to list: %v", c.IdTag())
+			} else {
+				a.Log("request to add nil client ignored")
+			}
+			clientListCopy = newClientListCopy()
+			refreshChannel()
+
+		case c := <-a.clientData.remove:
+			if c == nil {
+				a.Log("request to remove nil client ignored")
+				continue
+			}
+			a.Debugf(DebugIO, "removing client %v from list", c.IdTag())
+			pos := slices.Index[*mapper.ClientConnection](clients, c)
+			if pos < 0 {
+				a.Logf("client %v not found in server's client list, so can't delete it more", c.IdTag())
+				continue
+			}
+			clients[pos] = nil
+			clients = slices.Delete[[]*mapper.ClientConnection, *mapper.ClientConnection](clients, pos, pos+1)
+			clientListCopy = newClientListCopy()
+			refreshChannel()
+		}
+	}
 }
 
 //
@@ -299,10 +354,6 @@ func (a *Application) GetAppOptions() error {
 	if *initFile != "" {
 		a.InitFile = *initFile
 		a.Logf("reading client initial command set from \"%s\"", a.InitFile)
-		if err := a.refreshClientPreamble(); err != nil {
-			a.Logf("error reading init file \"%s\": %v", a.InitFile, err)
-			return err
-		}
 	}
 
 	if *passFile != "" {
@@ -344,324 +395,6 @@ func (a *Application) GetAppOptions() error {
 	a.Logf("using database \"%s\" to store internal state", a.DatabaseName)
 
 	return nil
-}
-
-// refreshClientPreamble updates the application's set of
-// preamble data lists.
-func (a *Application) refreshClientPreamble() error {
-	if a.InitFile == "" {
-		return nil
-	}
-
-	a.Debug(DebugInit, "acquiring a write lock on the preamble data")
-	a.clientPreamble.lock.Lock()
-	defer func() {
-		a.Debug(DebugInit, "releasing write lock on preamble data")
-		a.clientPreamble.lock.Unlock()
-	}()
-	a.Debug(DebugInit, "acquired write lock; proceeding")
-
-	f, err := os.Open(a.InitFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	recordPattern := regexp.MustCompile("^(\\w+)\\s+({.*)")
-	continuationPattern := regexp.MustCompile("^\\s+")
-	endOfRecordPattern := regexp.MustCompile("^}")
-	commandPattern := regexp.MustCompile("^(\\w+)\\s*$")
-
-	a.clientPreamble.preamble = nil
-	a.clientPreamble.postAuth = nil
-	a.clientPreamble.postReady = nil
-	a.clientPreamble.syncData = false
-	currentPreamble := &a.clientPreamble.preamble
-
-	scanner := bufio.NewScanner(f)
-outerScan:
-	for scanner.Scan() {
-	rescan:
-		if strings.TrimSpace(scanner.Text()) == "" {
-			continue
-		}
-		if strings.HasPrefix(scanner.Text(), "//") {
-			*currentPreamble = append(*currentPreamble, scanner.Text())
-			continue
-		}
-		if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
-			// dataless command f[1]
-			switch f[1] {
-			case "AUTH":
-				currentPreamble = &a.clientPreamble.postAuth
-			case "READY":
-				currentPreamble = &a.clientPreamble.postReady
-			case "SYNC":
-				a.clientPreamble.syncData = true
-			default:
-				return fmt.Errorf("invalid command \"%v\" in init file %s", scanner.Text(), a.InitFile)
-			}
-		} else if f := recordPattern.FindStringSubmatch(scanner.Text()); f != nil {
-			// start of record type f[1] with start of JSON string f[2]
-			// collect rest of string
-			var dataPacket strings.Builder
-			dataPacket.WriteString(f[2])
-
-			for scanner.Scan() {
-				if continuationPattern.MatchString(scanner.Text()) {
-					dataPacket.WriteString(scanner.Text())
-				} else {
-					if endOfRecordPattern.MatchString(scanner.Text()) {
-						dataPacket.WriteString(scanner.Text())
-					}
-					if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
-						return err
-					}
-					if !endOfRecordPattern.MatchString(scanner.Text()) {
-						// We already read into next record
-						goto rescan
-					} else {
-						continue outerScan
-					}
-				}
-			}
-			// We reached EOF while scanning with a command in progress
-			if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
-				return err
-			}
-			break
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	if (a.DebugLevel & DebugInit) != 0 {
-		a.Debugf(DebugInit, "client initial commands from %v", a.InitFile)
-		a.Debugf(DebugInit, "client sync: %v", a.clientPreamble.syncData)
-
-		for i, p := range a.clientPreamble.preamble {
-			a.Debugf(DebugInit, "client preamble #%d: %s", i, p)
-		}
-		for i, p := range a.clientPreamble.postAuth {
-			a.Debugf(DebugInit, "client post-auth #%d: %s", i, p)
-		}
-		for i, p := range a.clientPreamble.postReady {
-			a.Debugf(DebugInit, "client post-ready #%d: %s", i, p)
-		}
-	}
-
-	return nil
-}
-
-func commitInitCommand(cmd string, src strings.Builder, dst *[]string) error {
-	var b []byte
-	var err error
-
-	s := []byte(src.String())
-
-	switch cmd {
-	case "AI":
-		var data mapper.AddImageMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "AI?":
-		var data mapper.QueryImageMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "AV":
-		var data mapper.AdjustViewMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "CC":
-		var data mapper.ClearChatMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "CLR":
-		var data mapper.ClearMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "CLR@":
-		var data mapper.ClearFromMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "CO":
-		var data mapper.CombatModeMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "CS":
-		var data mapper.UpdateClockMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "DD=":
-		var data mapper.UpdateDicePresetsMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "DSM":
-		var data mapper.UpdateStatusMarkerMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "I":
-		var data mapper.UpdateTurnMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "IL":
-		var data mapper.UpdateInitiativeMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "L":
-		var data mapper.LoadFromMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-ARC":
-		var data mapper.LoadArcObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-CIRC":
-		var data mapper.LoadCircleObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-LINE":
-		var data mapper.LoadLineObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-POLY":
-		var data mapper.LoadPolygonObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-RECT":
-		var data mapper.LoadRectangleObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-SAOE":
-		var data mapper.LoadSpellAreaOfEffectObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-TEXT":
-		var data mapper.LoadTextObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "LS-TILE":
-		var data mapper.LoadTileObjectMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "MARK":
-		var data mapper.MarkMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "OA":
-		var data mapper.UpdateObjAttributesMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "OA+":
-		var data mapper.AddObjAttributesMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "OA-":
-		var data mapper.RemoveObjAttributesMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "PROGRESS":
-		var data mapper.UpdateProgressMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "AC", "PS":
-		var data mapper.PlaceSomeoneMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "ROLL":
-		var data mapper.RollResultMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "TB":
-		var data mapper.ToolbarMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "TO":
-		var data mapper.ChatMessageMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "UPDATES":
-		var data mapper.UpdateVersionsMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	case "WORLD":
-		var data mapper.WorldMessagePayload
-		if err = json.Unmarshal(s, &data); err == nil {
-			b, err = json.Marshal(data)
-		}
-
-	default:
-		return fmt.Errorf("invalid command %v in initialization file", cmd)
-	}
-
-	if err == nil {
-		*dst = append(*dst, fmt.Sprintf("%s %s", cmd, string(b)))
-	}
-	return err
 }
 
 func (a *Application) GetPersonalCredentials(user string) []byte {
@@ -768,21 +501,6 @@ func (a *Application) refreshAuthenticator() error {
 	}
 
 	return nil
-}
-
-func (a *Application) GetPreamble() ([]string, []string, []string, bool) {
-	if a == nil {
-		return nil, nil, nil, false
-	}
-	a.Debug(DebugIO, "acquiring read lock on preamble data")
-	a.clientPreamble.lock.RLock()
-	a.Debug(DebugIO, "read lock granted; continuing")
-	defer func() {
-		a.Debug(DebugIO, "releasing read lock on preamble data")
-		a.clientPreamble.lock.RUnlock()
-	}()
-
-	return a.clientPreamble.preamble, a.clientPreamble.postAuth, a.clientPreamble.postReady, a.clientPreamble.syncData
 }
 
 func (a *Application) HandleServerMessage(payload mapper.MessagePayload, requester *mapper.ClientConnection) {
@@ -1116,7 +834,6 @@ func (a *Application) HandleServerMessage(payload mapper.MessagePayload, request
 		a.SendToAllExcept(requester, payload.MessageType(), payload)
 
 	// These commands are passed on to our peers and remembered for later sync operations.
-	// TODO effect on state
 	case mapper.AdjustViewMessagePayload, mapper.ClearMessagePayload, mapper.ClearFromMessagePayload,
 		mapper.LoadFromMessagePayload,
 		mapper.LoadArcObjectMessagePayload,
@@ -1132,8 +849,9 @@ func (a *Application) HandleServerMessage(payload mapper.MessagePayload, request
 		mapper.UpdateObjAttributesMessagePayload,
 		mapper.PlaceSomeoneMessagePayload:
 		a.SendToAllExcept(requester, payload.MessageType(), payload)
+		a.UpdateGameState(&payload)
 
-	// TODO as above but they are privileged
+	// as above but they are privileged
 	case mapper.CombatModeMessagePayload, mapper.UpdateStatusMarkerMessagePayload,
 		mapper.UpdateTurnMessagePayload, mapper.UpdateInitiativeMessagePayload,
 		mapper.UpdateClockMessagePayload, mapper.ToolbarMessagePayload:
@@ -1154,9 +872,10 @@ func (a *Application) HandleServerMessage(payload mapper.MessagePayload, request
 			return
 		}
 		a.SendToAllExcept(requester, payload.MessageType(), payload)
+		a.UpdateGameState(&payload)
 
 	case mapper.SyncMessagePayload:
-		//TODO
+		a.SendGameState(requester)
 	}
 }
 
@@ -1183,4 +902,426 @@ func (a *Application) SendToAllExcept(c *mapper.ClientConnection, cmd mapper.Ser
 
 func (a *Application) SendToAll(cmd mapper.ServerMessage, data any) error {
 	return a.SendToAllExcept(nil, cmd, data)
+}
+
+// NewApplication creates and initializes a new Application value.
+func NewApplication() Application {
+	app := Application{
+		Logger:             log.Default(),
+		MessageIDGenerator: make(chan int),
+	}
+	app.clientPreamble.reload = make(chan byte)
+	app.clientPreamble.fetch = make(chan *mapper.ClientPreamble)
+	app.gameState.sync = make(chan *mapper.ClientConnection)
+	app.gameState.update = make(chan *mapper.MessagePayload)
+	app.clientData.add = make(chan *mapper.ClientConnection)
+	app.clientData.remove = make(chan *mapper.ClientConnection)
+	app.clientData.fetch = make(chan []*mapper.ClientConnection)
+	return app
+}
+
+//
+// managePreambleData centralizes access to the common preamble data
+// in a single goroutine, providing goroutine-safe access to it via
+// channels.
+//
+func (a *Application) managePreambleData() {
+	a.Log("preamble data manager started")
+	defer a.Log("preamble data manager stopped")
+
+	commitInitCommand := func(cmd string, src strings.Builder, dst *[]string) error {
+		var b []byte
+		var err error
+
+		s := []byte(src.String())
+
+		switch cmd {
+		case "AI":
+			var data mapper.AddImageMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "AI?":
+			var data mapper.QueryImageMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "AV":
+			var data mapper.AdjustViewMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "CC":
+			var data mapper.ClearChatMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "CLR":
+			var data mapper.ClearMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "CLR@":
+			var data mapper.ClearFromMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "CO":
+			var data mapper.CombatModeMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "CS":
+			var data mapper.UpdateClockMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "DD=":
+			var data mapper.UpdateDicePresetsMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "DSM":
+			var data mapper.UpdateStatusMarkerMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "I":
+			var data mapper.UpdateTurnMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "IL":
+			var data mapper.UpdateInitiativeMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "L":
+			var data mapper.LoadFromMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-ARC":
+			var data mapper.LoadArcObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-CIRC":
+			var data mapper.LoadCircleObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-LINE":
+			var data mapper.LoadLineObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-POLY":
+			var data mapper.LoadPolygonObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-RECT":
+			var data mapper.LoadRectangleObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-SAOE":
+			var data mapper.LoadSpellAreaOfEffectObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-TEXT":
+			var data mapper.LoadTextObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "LS-TILE":
+			var data mapper.LoadTileObjectMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "MARK":
+			var data mapper.MarkMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "OA":
+			var data mapper.UpdateObjAttributesMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "OA+":
+			var data mapper.AddObjAttributesMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "OA-":
+			var data mapper.RemoveObjAttributesMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "PROGRESS":
+			var data mapper.UpdateProgressMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "AC", "PS":
+			var data mapper.PlaceSomeoneMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "ROLL":
+			var data mapper.RollResultMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "TB":
+			var data mapper.ToolbarMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "TO":
+			var data mapper.ChatMessageMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "UPDATES":
+			var data mapper.UpdateVersionsMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		case "WORLD":
+			var data mapper.WorldMessagePayload
+			if err = json.Unmarshal(s, &data); err == nil {
+				b, err = json.Marshal(data)
+			}
+
+		default:
+			return fmt.Errorf("invalid command %v in initialization file", cmd)
+		}
+
+		if err == nil {
+			*dst = append(*dst, fmt.Sprintf("%s %s", cmd, string(b)))
+		}
+		return err
+	}
+
+	updateClientPreamble := func() {
+		if a.InitFile == "" {
+			return
+		}
+
+		f, err := os.Open(a.InitFile)
+		if err != nil {
+			a.Logf("error opening initial command file %v: %v", a.InitFile, err)
+			return
+		}
+		defer f.Close()
+
+		recordPattern := regexp.MustCompile("^(\\w+)\\s+({.*)")
+		continuationPattern := regexp.MustCompile("^\\s+")
+		endOfRecordPattern := regexp.MustCompile("^}")
+		commandPattern := regexp.MustCompile("^(\\w+)\\s*$")
+
+		a.clientPreamble.data.Preamble = nil
+		a.clientPreamble.data.PostAuth = nil
+		a.clientPreamble.data.PostReady = nil
+		a.clientPreamble.data.SyncData = false
+		currentPreamble := &a.clientPreamble.data.Preamble
+
+		scanner := bufio.NewScanner(f)
+	outerScan:
+		for scanner.Scan() {
+		rescan:
+			if strings.TrimSpace(scanner.Text()) == "" {
+				continue
+			}
+			if strings.HasPrefix(scanner.Text(), "//") {
+				*currentPreamble = append(*currentPreamble, scanner.Text())
+				continue
+			}
+			if f := commandPattern.FindStringSubmatch(scanner.Text()); f != nil {
+				// dataless command f[1]
+				switch f[1] {
+				case "AUTH":
+					currentPreamble = &a.clientPreamble.data.PostAuth
+				case "READY":
+					currentPreamble = &a.clientPreamble.data.PostReady
+				case "SYNC":
+					a.clientPreamble.data.SyncData = true
+				default:
+					a.Logf("invalid command \"%v\" in init file %s", scanner.Text(), a.InitFile)
+					return
+				}
+			} else if f := recordPattern.FindStringSubmatch(scanner.Text()); f != nil {
+				// start of record type f[1] with start of JSON string f[2]
+				// collect rest of string
+				var dataPacket strings.Builder
+				dataPacket.WriteString(f[2])
+
+				for scanner.Scan() {
+					if continuationPattern.MatchString(scanner.Text()) {
+						dataPacket.WriteString(scanner.Text())
+					} else {
+						if endOfRecordPattern.MatchString(scanner.Text()) {
+							dataPacket.WriteString(scanner.Text())
+						}
+						if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+							a.Logf("error in initial command file: %v", err)
+							return
+						}
+						if !endOfRecordPattern.MatchString(scanner.Text()) {
+							// We already read into next record
+							goto rescan
+						} else {
+							continue outerScan
+						}
+					}
+				}
+				// We reached EOF while scanning with a command in progress
+				if err := commitInitCommand(f[1], dataPacket, currentPreamble); err != nil {
+					a.Logf("error in initial command file: %v", err)
+					return
+				}
+				break
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			a.Logf("error in initial command file: %v", err)
+			return
+		}
+
+		if (a.DebugLevel & DebugInit) != 0 {
+			a.Debugf(DebugInit, "client initial commands from %v", a.InitFile)
+			a.Debugf(DebugInit, "client sync: %v", a.clientPreamble.data.SyncData)
+
+			for i, p := range a.clientPreamble.data.Preamble {
+				a.Debugf(DebugInit, "client preamble #%d: %s", i, p)
+			}
+			for i, p := range a.clientPreamble.data.PostAuth {
+				a.Debugf(DebugInit, "client post-auth #%d: %s", i, p)
+			}
+			for i, p := range a.clientPreamble.data.PostReady {
+				a.Debugf(DebugInit, "client post-ready #%d: %s", i, p)
+			}
+		}
+	}
+
+	copyCurrentPreambleData := func() *mapper.ClientPreamble {
+		pp := make([]string, len(a.clientPreamble.data.Preamble))
+		pa := make([]string, len(a.clientPreamble.data.PostAuth))
+		pr := make([]string, len(a.clientPreamble.data.PostReady))
+		copy(pp, a.clientPreamble.data.Preamble)
+		copy(pa, a.clientPreamble.data.PostAuth)
+		copy(pr, a.clientPreamble.data.PostReady)
+
+		return &mapper.ClientPreamble{
+			SyncData:  a.clientPreamble.data.SyncData,
+			Preamble:  pp,
+			PostAuth:  pa,
+			PostReady: pr,
+		}
+	}
+
+	updateClientPreamble()
+	nextValue := copyCurrentPreambleData()
+	a.Debugf(DebugInit, "staged preamble data %p, pre=%p, pa=%p, pr=%p", nextValue, &nextValue.Preamble, &nextValue.PostAuth, &nextValue.PostReady)
+
+	for {
+		select {
+		case <-a.clientPreamble.reload:
+			a.Debug(DebugInit, "reloading client preamble data from file")
+			updateClientPreamble()
+
+			select {
+			case <-a.clientPreamble.fetch:
+				a.Debug(DebugInit, "removed stale preamble data from channel")
+			default:
+				a.Debug(DebugInit, "no stale preamble data in channel to remove")
+			}
+
+			a.Debug(DebugInit, "staging fresh preamble copy into channel")
+			nextValue = copyCurrentPreambleData()
+
+		case a.clientPreamble.fetch <- nextValue:
+			nextValue = copyCurrentPreambleData()
+			a.Debugf(DebugInit, "pushed preamble data to channel; next will be %p, pre=%p, pa=%p, pr=%p", nextValue, &nextValue.Preamble, &nextValue.PostAuth, &nextValue.PostReady)
+		}
+	}
+}
+
+//
+// manageGameState is a goroutine which tracks the global game state for clients
+//
+func (a *Application) manageGameState() {
+	var isInCombatMode bool
+	var toolbarHidden bool
+
+	a.Log("game state manager started")
+	defer a.Log("game state manager stopped")
+
+	for {
+		select {
+		case event := <-a.gameState.update:
+			if event == nil {
+				a.Log("received nil event to update game state")
+				continue
+			}
+			a.Debugf(DebugState, "updating game state from event %v", *event)
+			switch p := (*event).(type) {
+			case mapper.ToolbarMessagePayload:
+				toolbarHidden = !p.Enabled
+			case mapper.CombatModeMessagePayload:
+				isInCombatMode = p.Enabled
+			default:
+				a.Logf("unknown event %v (can't update game state)", *event)
+			}
+
+		case client := <-a.gameState.sync:
+			a.Debugf(DebugState, "client %v requests SYNC", client.IdTag())
+			client.Conn.Send(mapper.CombatMode, mapper.CombatModeMessagePayload{Enabled: isInCombatMode})
+			client.Conn.Send(mapper.Toolbar, mapper.ToolbarMessagePayload{Enabled: !toolbarHidden})
+		}
+	}
+}
+
+func (a *Application) UpdateGameState(event *mapper.MessagePayload) {
+	a.gameState.update <- event
+}
+
+func (a *Application) SendGameState(client *mapper.ClientConnection) {
+	a.gameState.sync <- client
 }
