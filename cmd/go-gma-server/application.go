@@ -1289,9 +1289,35 @@ func (a *Application) managePreambleData() {
 func (a *Application) manageGameState() {
 	var isInCombatMode bool
 	var toolbarHidden bool
+	var viewx, viewy float64
+	var currentTurn *mapper.UpdateTurnMessagePayload
+	var currentInitiativeList *mapper.UpdateInitiativeMessagePayload
+	var currentTime *mapper.UpdateClockMessagePayload
+
+	newStatusMarkers := make(map[string]mapper.UpdateStatusMarkerMessagePayload)
+
+	// eventHistory maps an event token to a server message we received. The token may be one of these:
+	//   new:<id>			creation of new element. supercedes existing *:<id> entries when added.
+	//   add:<id>:<attr>	add value(s) to <attr> of object
+	//   del:<id>:<attr>	delete value(s) from <attr> of object
+	//   mod:<id>			modification of attributes of an object
+	//   llf:<name>			load local file
+	//   lsf:<name>			load remote file
+	//   ulf:<name>			unload local file
+	//   usf:<name>			unload remote file
+	eventHistory := make(map[string]*mapper.MessagePayload)
 
 	a.Log("game state manager started")
 	defer a.Log("game state manager stopped")
+
+	recordElement := func(id string, e *mapper.MessagePayload) {
+		for k, _ := range eventHistory {
+			if strings.Contains(k, ":"+id) {
+				delete(eventHistory, k)
+			}
+		}
+		eventHistory["new:"+id] = e
+	}
 
 	for {
 		select {
@@ -1302,10 +1328,233 @@ func (a *Application) manageGameState() {
 			}
 			a.Debugf(DebugState, "updating game state from event %v", *event)
 			switch p := (*event).(type) {
-			case mapper.ToolbarMessagePayload:
-				toolbarHidden = !p.Enabled
+			case mapper.AddObjAttributesMessagePayload:
+				// TODO this could be more efficient
+				if o, ok := eventHistory["del:"+p.ObjID+":"+p.AttrName]; ok {
+					obj, valid := (*o).(mapper.RemoveObjAttributesMessagePayload)
+					if !valid {
+						a.Logf("value of eventHistory[del:%s:%s] is of type %T (removed)", p.ObjID, p.AttrName, o)
+						delete(eventHistory, "del:"+p.ObjID+":"+p.AttrName)
+					} else {
+						for _, addedValue := range p.Values {
+							if pos := slices.Index[string](obj.Values, addedValue); pos >= 0 {
+								// we previously tracked deletion of this, so remove from the delete list now
+								slices.Delete[[]string, string](obj.Values, pos, pos+1)
+							}
+						}
+					}
+				}
+				for _, addedValue := range p.Values {
+					if o, ok := eventHistory["add:"+p.ObjID+":"+p.AttrName]; ok {
+						obj, valid := (*o).(mapper.AddObjAttributesMessagePayload)
+						if !valid {
+							a.Logf("value of eventHistory[add:%s:%s] is of type %T (removed)", p.ObjID, p.AttrName, o)
+							delete(eventHistory, "add:"+p.ObjID+":"+p.AttrName)
+						} else {
+							if slices.Contains[string](obj.Values, addedValue) {
+								// we already have a note to add this value, do nothing
+							} else {
+								// add this to our existing add: record
+								obj.Values = append(obj.Values, addedValue)
+							}
+						}
+					} else {
+						// we need a new add: record for this attribute
+						var pl mapper.MessagePayload
+						pl = mapper.AddObjAttributesMessagePayload{
+							ObjID:    p.ObjID,
+							AttrName: p.AttrName,
+							Values: []string{
+								addedValue,
+							},
+						}
+						eventHistory["add:"+p.ObjID+":"+p.AttrName] = &pl
+					}
+				}
+
+			case mapper.AdjustViewMessagePayload:
+				viewx = p.XView
+				viewy = p.YView
+			case mapper.ClearMessagePayload:
+				switch p.ObjID {
+				case "*":
+					viewx = 0.0
+					viewy = 0.0
+					eventHistory = make(map[string]*mapper.MessagePayload)
+
+				case "E*":
+					for k, v := range eventHistory {
+						if !strings.HasPrefix(k, "new:") {
+							delete(eventHistory, k)
+						} else if _, isCreature := (*v).(mapper.PlaceSomeoneMessagePayload); !isCreature {
+							delete(eventHistory, k)
+						}
+					}
+
+				case "M*":
+					for k, v := range eventHistory {
+						if strings.HasPrefix(k, "new:") {
+							if creature, ok := (*v).(mapper.PlaceSomeoneMessagePayload); ok {
+								if creature.CreatureType != 2 {
+									delete(eventHistory, k)
+								}
+							}
+						}
+					}
+
+				case "P*":
+					for k, v := range eventHistory {
+						if strings.HasPrefix(k, "new:") {
+							if creature, ok := (*v).(mapper.PlaceSomeoneMessagePayload); ok {
+								if creature.CreatureType == 2 {
+									delete(eventHistory, k)
+								}
+							}
+						}
+					}
+
+				default:
+					if pos := strings.IndexRune(p.ObjID, '='); pos > 0 {
+						p.ObjID = p.ObjID[pos+1:]
+					}
+
+					for k, v := range eventHistory {
+						if creature, ok := (*v).(mapper.PlaceSomeoneMessagePayload); ok {
+							if creature.Name == p.ObjID {
+								delete(eventHistory, k)
+								continue
+							}
+						}
+						f := strings.Split(k, ":")
+						if len(f) > 1 && f[1] == p.ObjID {
+							delete(eventHistory, k)
+						}
+					}
+				}
+
+			case mapper.ClearFromMessagePayload:
+				if p.IsLocalFile {
+					delete(eventHistory, "llf:"+p.File)
+					eventHistory["ulf:"+p.File] = event
+				} else {
+					delete(eventHistory, "lsf:"+p.File)
+					eventHistory["usf:"+p.File] = event
+				}
+
 			case mapper.CombatModeMessagePayload:
 				isInCombatMode = p.Enabled
+
+			case mapper.LoadArcObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadCircleObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadLineObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadPolygonObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadRectangleObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadSpellAreaOfEffectObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadTextObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.LoadTileObjectMessagePayload:
+				recordElement(p.ID, event)
+			case mapper.PlaceSomeoneMessagePayload:
+				recordElement(p.ID, event)
+
+			case mapper.LoadFromMessagePayload:
+				if p.IsLocalFile {
+					delete(eventHistory, "ulf:"+p.File)
+					eventHistory["llf:"+p.File] = event
+				} else {
+					delete(eventHistory, "usf:"+p.File)
+					eventHistory["lsf:"+p.File] = event
+				}
+
+			case mapper.RemoveObjAttributesMessagePayload:
+				// TODO this could be more efficient
+				if o, ok := eventHistory["add:"+p.ObjID+":"+p.AttrName]; ok {
+					obj, valid := (*o).(mapper.AddObjAttributesMessagePayload)
+					if !valid {
+						a.Logf("value of eventHistory[add:%s:%s] is of type %T (removed)", p.ObjID, p.AttrName, o)
+						delete(eventHistory, "add:"+p.ObjID+":"+p.AttrName)
+					} else {
+						for _, addedValue := range p.Values {
+							if pos := slices.Index[string](obj.Values, addedValue); pos >= 0 {
+								// we previously tracked addition of this, so remove from the add list now
+								slices.Delete[[]string, string](obj.Values, pos, pos+1)
+							}
+						}
+					}
+				}
+				for _, addedValue := range p.Values {
+					if o, ok := eventHistory["del:"+p.ObjID+":"+p.AttrName]; ok {
+						obj, valid := (*o).(mapper.RemoveObjAttributesMessagePayload)
+						if !valid {
+							a.Logf("value of eventHistory[del:%s:%s] is of type %T (removed)", p.ObjID, p.AttrName, o)
+							delete(eventHistory, "del:"+p.ObjID+":"+p.AttrName)
+						} else {
+							if slices.Contains[string](obj.Values, addedValue) {
+								// we already have a note to remove this value, do nothing
+							} else {
+								// add this to our existing del: record
+								obj.Values = append(obj.Values, addedValue)
+							}
+						}
+					} else {
+						// we need a new del: record for this attribute
+						var pl mapper.MessagePayload
+						pl = mapper.RemoveObjAttributesMessagePayload{
+							ObjID:    p.ObjID,
+							AttrName: p.AttrName,
+							Values: []string{
+								addedValue,
+							},
+						}
+						eventHistory["del:"+p.ObjID+":"+p.AttrName] = &pl
+					}
+				}
+
+			case mapper.ToolbarMessagePayload:
+				toolbarHidden = !p.Enabled
+
+			case mapper.UpdateObjAttributesMessagePayload:
+				if o, ok := eventHistory["mod:"+p.ObjID]; ok {
+					old, valid := (*o).(mapper.UpdateObjAttributesMessagePayload)
+					if !valid {
+						a.Logf("value of eventHistory[mod:%s] is of type %T (removed)", p.ObjID, o)
+						delete(eventHistory, "mod:"+p.ObjID)
+					} else {
+						// we already have a record for this; edit in place
+						for attrName, attrValue := range p.NewAttrs {
+							old.NewAttrs[attrName] = attrValue
+							// If we have add: or del: events for this object, this supercedes them
+							delete(eventHistory, "add:"+p.ObjID+":"+attrName)
+							delete(eventHistory, "del:"+p.ObjID+":"+attrName)
+						}
+					}
+				} else {
+					eventHistory["mod:"+p.ObjID] = event
+					for attrName, _ := range p.NewAttrs {
+						// If we have add: or del: events for this object, this supercedes them
+						delete(eventHistory, "add:"+p.ObjID+":"+attrName)
+						delete(eventHistory, "del:"+p.ObjID+":"+attrName)
+					}
+				}
+
+			case mapper.UpdateStatusMarkerMessagePayload:
+				newStatusMarkers[p.Condition] = p
+
+			case mapper.UpdateTurnMessagePayload:
+				currentTurn = &p
+
+			case mapper.UpdateInitiativeMessagePayload:
+				currentInitiativeList = &p
+
+			case mapper.UpdateClockMessagePayload:
+				currentTime = &p
+
 			default:
 				a.Logf("unknown event %v (can't update game state)", *event)
 			}
@@ -1314,6 +1563,51 @@ func (a *Application) manageGameState() {
 			a.Debugf(DebugState, "client %v requests SYNC", client.IdTag())
 			client.Conn.Send(mapper.CombatMode, mapper.CombatModeMessagePayload{Enabled: isInCombatMode})
 			client.Conn.Send(mapper.Toolbar, mapper.ToolbarMessagePayload{Enabled: !toolbarHidden})
+			client.Conn.Send(mapper.AdjustView, mapper.AdjustViewMessagePayload{XView: viewx, YView: viewy})
+			if currentTurn == nil {
+				client.Conn.Send(mapper.Comment, "no current turn set")
+			} else {
+				client.Conn.Send(mapper.UpdateTurn, *currentTurn)
+			}
+			if currentInitiativeList == nil {
+				client.Conn.Send(mapper.Comment, "no current initiative list set")
+			} else {
+				client.Conn.Send(mapper.UpdateInitiative, *currentInitiativeList)
+			}
+			if currentTime == nil {
+				client.Conn.Send(mapper.Comment, "no current time set")
+			} else {
+				client.Conn.Send(mapper.UpdateClock, *currentTime)
+			}
+			for _, marker := range newStatusMarkers {
+				client.Conn.Send(mapper.UpdateStatusMarker, marker)
+			}
+
+			for k, e := range eventHistory {
+				if strings.HasPrefix(k, "llf:") || strings.HasPrefix(k, "lsf:") {
+					client.Conn.Send((*e).MessageType(), *e)
+				}
+			}
+
+			for k, e := range eventHistory {
+				if strings.HasPrefix(k, "ulf:") || strings.HasPrefix(k, "usf:") {
+					client.Conn.Send((*e).MessageType(), *e)
+				}
+			}
+
+			for k, e := range eventHistory {
+				if strings.HasPrefix(k, "new:") {
+					client.Conn.Send((*e).MessageType(), *e)
+				}
+			}
+
+			for k, e := range eventHistory {
+				if strings.HasPrefix(k, "add:") || strings.HasPrefix(k, "del:") || strings.HasPrefix(k, "mod:") {
+					client.Conn.Send((*e).MessageType(), *e)
+				}
+			}
+
+			a.Debug(DebugState, "SYNC operation completed")
 		}
 	}
 }
