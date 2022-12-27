@@ -726,6 +726,9 @@ func (a *Application) HandleServerMessage(payload mapper.MessagePayload, request
 			a.Logf("error sending die-roll presets after changing them: %v", err)
 		}
 
+	case mapper.EchoMessagePayload:
+		requester.Conn.Send(mapper.Echo, p)
+
 	case mapper.FilterDicePresetsMessagePayload:
 		if requester.Auth == nil {
 			a.Logf("Unable to filter die-roll preset for unauthenticated user")
