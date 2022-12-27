@@ -7,12 +7,12 @@ replace github.com/MadScienceZone/go-gma/v5 => ../go-gma
 require (
 	github.com/mattn/go-sqlite3 v1.14.6
 	github.com/newrelic/go-agent/v3 v3.20.2
+	golang.org/x/exp v0.0.0-20221217163422-3c43f8badb15
 )
 
 require (
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/schwarmco/go-cartesian-product v0.0.0-20180515110546-d5ee747a6dc9 // indirect
-	golang.org/x/exp v0.0.0-20221217163422-3c43f8badb15 // indirect
 	golang.org/x/net v0.0.0-20201021035429-f5854403a974 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 	golang.org/x/text v0.3.3 // indirect
