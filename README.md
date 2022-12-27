@@ -1,4 +1,4 @@
-# ⛔entry_sign: DEPRECATED
+# ⛔ DEPRECATED
 The server is moving into the [go-gma](https://github.com/MadScienceZone/go-gma) project
 as of the v5.0.0 release of the latter.
 
