@@ -1,3 +1,7 @@
+# :no-entry: DEPRECATED
+The server is moving into the [go-gma](https://github.com/MadScienceZone/go-gma) project
+as of the v5.0.0 release of the latter.
+
 [![Coverage Status](https://coveralls.io/repos/github/MadScienceZone/go-gma-server/badge.svg?branch=main)](https://coveralls.io/github/MadScienceZone/go-gma-server?branch=main)
 ![GitHub](https://img.shields.io/github/license/MadScienceZone/go-gma-server)
 # go-gma-server
